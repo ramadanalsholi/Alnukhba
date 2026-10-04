@@ -27,8 +27,28 @@ create table if not exists public.app_records (
   id text not null,
   payload jsonb not null default '{}'::jsonb,
   updated_at timestamptz not null default now(),
+  constraint app_records_collection_check check (collection in (
+    'invoices', 'inventory', 'inventoryMovements', 'customers', 'suppliers',
+    'workers', 'attendance', 'treasury', 'expenses'
+  )),
   primary key (organization_id, collection, id)
 );
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_constraint
+    where conname = 'app_records_collection_check'
+      and conrelid = 'public.app_records'::regclass
+  ) then
+    alter table public.app_records
+      add constraint app_records_collection_check check (collection in (
+        'invoices', 'inventory', 'inventoryMovements', 'customers', 'suppliers',
+        'workers', 'attendance', 'treasury', 'expenses'
+      ));
+  end if;
+end;
+$$;
 
 create index if not exists app_records_org_collection_updated_idx on public.app_records (
     organization_id,
@@ -87,7 +107,7 @@ begin
     on conflict do nothing;
   else
     insert into public.organizations (name)
-    values (coalesce(nullif(trim(p_name), ''), 'مطحن النخبة'))
+    values (coalesce(nullif(trim(p_name), ''), 'شركة القصر'))
     returning organizations.id, organizations.name, organizations.invite_code
     into target_id, target_name, target_code;
     insert into public.organization_members (organization_id, user_id, role)
@@ -100,6 +120,7 @@ $$;
 
 grant
 execute on function public.get_or_create_my_organization (text, text) to authenticated;
+revoke all on function public.get_or_create_my_organization (text, text) from public, anon;
 
 alter table public.organizations enable row level security;
 
@@ -107,6 +128,7 @@ alter table public.organization_members enable row level security;
 
 alter table public.app_records enable row level security;
 
+drop policy if exists "members can view their organizations" on public.organizations;
 create policy "members can view their organizations" on public.organizations for
 select to authenticated using (
         exists (
@@ -118,9 +140,11 @@ select to authenticated using (
         )
     );
 
+drop policy if exists "members can view membership" on public.organization_members;
 create policy "members can view membership" on public.organization_members for
 select to authenticated using (user_id = auth.uid ());
 
+drop policy if exists "members can read records" on public.app_records;
 create policy "members can read records" on public.app_records for
 select to authenticated using (
         exists (
@@ -132,6 +156,7 @@ select to authenticated using (
         )
     );
 
+drop policy if exists "members can insert records" on public.app_records;
 create policy "members can insert records" on public.app_records for
 insert
     to authenticated
@@ -146,6 +171,7 @@ with
         )
     );
 
+drop policy if exists "members can update records" on public.app_records;
 create policy "members can update records" on public.app_records for
 update to authenticated using (
     exists (
@@ -167,14 +193,30 @@ with
         )
     );
 
-create policy "members can delete records" on public.app_records for delete to authenticated using (
+drop policy if exists "members can delete records" on public.app_records;
+drop policy if exists "owners can delete records" on public.app_records;
+create policy "owners can delete records" on public.app_records for delete to authenticated using (
     exists (
         select 1
         from public.organization_members m
-        where
-            m.organization_id = app_records.organization_id
-            and m.user_id = auth.uid ()
+        where m.organization_id = app_records.organization_id
+          and m.user_id = auth.uid ()
+          and m.role = 'owner'
     )
 );
 
-alter publication supabase_realtime add table public.app_records;
+alter table public.app_records replica identity full;
+
+do $$
+begin
+  if not exists (
+    select 1
+    from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'app_records'
+  ) then
+    alter publication supabase_realtime add table public.app_records;
+  end if;
+end;
+$$;

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>مطحن النخبة</title>
+<title>شركة القصر</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=El+Messiri:wght@500;600;700&display=swap" rel="stylesheet">
@@ -57,6 +57,7 @@ const SUPABASE_URL = "";
 const SUPABASE_ANON_KEY = "";
 const hasSupabaseConfig = SUPABASE_URL.startsWith("https://") && !SUPABASE_ANON_KEY.startsWith("YOUR_");
 const supabaseClient = hasSupabaseConfig && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+const COMPANY_LOGO_PATH = "photo_2026-10-04_22-29-34.jpg";
 
 // ---------- icons ----------
 const ICON_PATHS = {
@@ -101,13 +102,26 @@ function Icon({ name, size = 16, color, style, className }) {
 // ---------- helpers ----------
 const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
 const todayISO = () => new Date().toISOString().slice(0, 10);
-const fmt = (n) => Number(n || 0).toLocaleString("en-US");
+const roundMoney = (n) => Math.round((Number(n || 0) + Math.sign(Number(n || 0)) * Number.EPSILON) * 100) / 100;
+const fmt = (n) => roundMoney(n || 0).toLocaleString("en-US", { maximumFractionDigits: 2 });
 const positiveNumber = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
 const nonNegativeNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0;
+const getInvoicePaidAmount = (invoice) => Number(invoice.paidAmount ?? (invoice.paymentStatus === "paid" || (!invoice.paymentStatus && !invoice.debtTransactionId) ? invoice.amount : 0));
+const getInvoiceInitialPaidAmount = (invoice, customers = [], suppliers = []) => Number(invoice.initialPaidAmount ?? Math.max(0, getInvoicePaidAmount(invoice) - getInvoiceLaterPaymentsAmount(invoice, customers, suppliers)));
+const getInvoiceLaterPaymentsAmount = (invoice, customers = [], suppliers = []) => {
+  const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
+  const supplier = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId));
+  const customerTotal = (customer?.transactions || []).filter((transaction) => transaction.customerPayment && transaction.invoiceId === invoice.id).reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const supplierTotal = (supplier?.transactions || []).filter((transaction) => transaction.supplierPayment).reduce((sum, transaction) => sum + (transaction.allocations || []).filter((allocation) => allocation.invoiceId === invoice.id).reduce((allocationSum, allocation) => allocationSum + Number(allocation.amount || 0), 0), 0);
+  return roundMoney(customerTotal + supplierTotal);
+};
+const getInvoiceReturnedAmount = (invoiceId, invoices = []) => invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === invoiceId).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+const getInvoiceOutstanding = (invoice, invoices = []) => Math.max(0, Number(invoice.amount || 0) - getInvoicePaidAmount(invoice) - getInvoiceReturnedAmount(invoice.id, invoices));
+const getInvoicePaymentStatus = (invoice, invoices = []) => getInvoiceOutstanding(invoice, invoices) === 0 ? "paid" : getInvoicePaidAmount(invoice) > 0 ? "partial" : "unpaid";
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
-const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : t.type === "credit" ? -Number(t.amount) : 0), 0);
+const contactBalance = (c) => roundMoney((c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : t.type === "credit" ? -Number(t.amount) : 0), 0));
 const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
 const getCustomerOutstanding = (customer, projects, income) => {
   const ledger = contactBalance(customer);
@@ -222,6 +236,32 @@ const upsertSupplierDebt = (supplier, transaction) => {
 const getSupplierDebtInvoices = (supplierId, invoices = []) => invoices
   .filter((invoice) => invoice.supplierId === supplierId && invoice.debtTransactionId && positiveNumber(invoice.amount))
   .sort((a, b) => (a.date || '').localeCompare(b.date || '') || String(a.id).localeCompare(String(b.id)));
+const getInvoiceReturnedQuantity = (invoiceId, itemId, invoices = []) => invoices
+  .filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === invoiceId)
+  .reduce((sum, invoice) => sum + (invoice.items || []).filter((item) => item.inventoryId === itemId).reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0);
+const getRemainingInvoiceLines = (source, invoices = [], currentReturn = null) => {
+  if (!source) return [];
+  const grouped = (source.items || []).reduce((lines, line) => {
+    const existing = lines.get(line.inventoryId);
+    const quantity = Number(line.quantity || 0);
+    lines.set(line.inventoryId, existing
+      ? { ...existing, quantity: Number(existing.quantity || 0) + quantity, total: Number(existing.total || 0) + Number(line.total || 0), costTotal: Number(existing.costTotal || 0) + quantity * Number(line.costUnitPrice || 0) }
+      : { ...line, costTotal: quantity * Number(line.costUnitPrice || 0) });
+    return lines;
+  }, new Map());
+  return [...grouped.values()].map((line) => {
+    const alreadyReturned = getInvoiceReturnedQuantity(source.id, line.inventoryId, invoices);
+    const currentQuantity = currentReturn?.isReturn && currentReturn.returnForInvoiceId === source.id
+      ? (currentReturn.items || []).filter((item) => item.inventoryId === line.inventoryId).reduce((sum, item) => sum + Number(item.quantity || 0), 0)
+      : 0;
+    return {
+      ...line,
+      unitPrice: Number(line.quantity || 0) ? roundMoney(Number(line.total || 0) / Number(line.quantity)) : Number(line.unitPrice || 0),
+      costUnitPrice: Number(line.quantity || 0) ? roundMoney(Number(line.costTotal || 0) / Number(line.quantity)) : Number(line.costUnitPrice || 0),
+      returnable: Math.max(0, Number(line.quantity || 0) - alreadyReturned + currentQuantity),
+    };
+  }).filter((line) => line.returnable > 0);
+};
 const getSupplierStatement = (supplier, invoices = []) => {
   const debtInvoices = getSupplierDebtInvoices(supplier.id, invoices);
   const transactions = supplier.transactions || [];
@@ -564,9 +604,10 @@ function useAuth() {
   const [error, setError] = useState("");
 
   const loadOrganization = async (currentSession) => {
-    if (!currentSession) { setSession(null); setOrganization(null); setLoading(false); return; }
+    if (!currentSession) { setError(""); setSession(null); setOrganization(null); setLoading(false); return; }
+    setError("");
     setSession(currentSession);
-    const organizationName = currentSession.user.user_metadata?.organization_name || "مطحن النخبة";
+    const organizationName = currentSession.user.user_metadata?.organization_name || "شركة القصر";
     const organizationCode = currentSession.user.user_metadata?.organization_code || "";
     const { data, error: organizationError } = await supabaseClient.rpc("get_or_create_my_organization", { p_name: organizationName, p_code: organizationCode });
     if (organizationError) setError(organizationError.message);
@@ -591,7 +632,7 @@ function AuthScreen({ auth }) {
   const [mode, setMode] = useState("signin");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [organizationName, setOrganizationName] = useState("مطحن النخبة");
+  const [organizationName, setOrganizationName] = useState("شركة القصر");
   const [organizationCode, setOrganizationCode] = useState("");
   const [message, setMessage] = useState("");
   const [busy, setBusy] = useState(false);
@@ -606,7 +647,7 @@ function AuthScreen({ auth }) {
   return (
     <div dir="rtl" className="min-h-screen flex items-center justify-center p-4" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
       <div className="w-full max-w-md rounded-2xl border p-6 shadow-sm" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
-        <h1 className="text-xl font-bold mb-1" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مطحن النخبة</h1>
+        <h1 className="text-xl font-bold mb-1" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>شركة القصر</h1>
         <p className="text-sm mb-5" style={{ color: "var(--text-muted)" }}>{mode === "signin" ? "سجّل الدخول للوصول إلى بيانات الشركة" : "أنشئ حساب الشركة الأول"}</p>
         <div className="flex flex-col gap-3">
           {mode === "signup" && <>
@@ -636,8 +677,9 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
   const lowStock = useMemo(() => inventory.filter((i) => Number(i.quantity) <= Number(i.minThreshold || 0)), [inventory]);
   const thisMonth = monthKey(todayISO());
-  const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
+  const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0) * (x.isReturn ? -1 : 1), 0), [invoices, thisMonth]);
   const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
+  const supplierDebt = useMemo(() => suppliers.reduce((sum, supplier) => sum + getSupplierStatement(supplier, invoices).owed, 0), [suppliers, invoices]);
 
   const handleImportBackup = async (event) => {
     const file = event.target.files?.[0];
@@ -656,6 +698,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
     { key: "dashboard", label: "لوحة التحكم", icon: "dashboard" },
     { key: "purchases", label: "المشتريات", icon: "truck" },
     { key: "sales", label: "المبيعات", icon: "receipt" },
+    { key: "cashflow", label: "القبض والصرف", icon: "wallet" },
     { key: "treasury", label: "الخزينة الرئيسية", icon: "wallet" },
     { key: "expenses", label: "المصروفات اليومية", icon: "trendDown" },
     { key: "accounts", label: "الحسابات والديون", icon: "users" },
@@ -671,9 +714,9 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
     <div dir="rtl" className="w-full min-h-screen flex" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
       <aside className="w-[220px] shrink-0 hidden sm:flex sticky top-0 h-screen overflow-y-auto flex-col py-5 px-3 gap-1" style={{ background: "#2B2A27" }}>
         <div className="px-2 pb-5 flex items-center gap-2">
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <CompanyBadge size={36} variant="dark" />
           <div>
-            <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>مطحن النخبة</div>
+            <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>شركة القصر</div>
             <div className="text-[11px] text-stone-400">إدارة المحاسبة</div>
           </div>
         </div>
@@ -720,9 +763,9 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 
       <main className="flex-1 min-w-0 p-4 sm:p-6 pb-24 sm:pb-6">
         <div className="sm:hidden mb-4 rounded-xl border px-3 py-3 flex items-center gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
-          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <CompanyBadge size={36} variant="default" />
           <div className="min-w-0 flex-1">
-            <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مطحن النخبة</div>
+            <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>شركة القصر</div>
             <div className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{email || "حساب الشركة"}{organizationCode ? " · رمز الشركة: " + organizationCode : ""}</div>
           </div>
           {email && <button onClick={onSignOut} className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border" style={{ color: "var(--text-body)", borderColor: "var(--card-border)" }}>تسجيل الخروج</button>}
@@ -738,17 +781,18 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
           <div className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
         </div>
         {tab === "dashboard" && (
-          <Dashboard invoices={invoices} lowStock={lowStock} customerDebt={customerDebt} treasury={treasury} goInvoices={() => setTab("purchases")} />
+          <Dashboard invoices={invoices} lowStock={lowStock} customerDebt={customerDebt} supplierDebt={supplierDebt} monthInvoices={monthInvoices} treasury={treasury} goInvoices={() => setTab("purchases")} />
         )}
         {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
-            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} upsert={upsert} remove={remove} />
+            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} />
         )}
-        {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} upsert={upsert} remove={remove} />}
+        {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} invoices={invoices} upsert={upsert} remove={remove} />}
         {tab === "reports" && <MillReportsTab month={reportMonth} setMonth={setReportMonth} invoices={invoices} expenses={expenses} customers={customers} suppliers={suppliers} inventory={inventory} inventoryMovements={inventoryMovements} treasury={treasury} />}
       </main>
     </div>
@@ -756,26 +800,29 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
 }
 
 // ---------- Dashboard ----------
-function Dashboard({ invoices, lowStock, customerDebt, treasury, goInvoices }) {
+function Dashboard({ invoices, lowStock, customerDebt, supplierDebt, monthInvoices, treasury, goInvoices }) {
   const recentInvoices = [...invoices].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 5);
   const cashBalance = Number(treasury?.[0]?.openingBalance || 0) + (treasury?.[0]?.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+  const purchasesTotal = invoices.filter((invoice) => invoice.direction === "purchase" && !invoice.isReturn).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+  const salesTotal = invoices.filter((invoice) => invoice.direction === "sale" && !invoice.isReturn).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
 
   return (
     <div className="flex flex-col gap-6">
       <div>
         <h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>لوحة التحكم</h1>
-        <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>نظرة عامة على مطحن النخبة اليوم</p>
+        <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>نظرة عامة على شركة القصر اليوم</p>
       </div>
 
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
         <StatCard icon="wallet" label="رصيد الخزينة الرئيسية" value={fmt(cashBalance)} accent="#6E8F72" />
-        <StatCard icon="receipt" label="إجمالي الفواتير" value={invoices.length} accent="#C69C4B" />
+        <StatCard icon="truck" label="إجمالي قيمة فواتير المشتريات" value={fmt(purchasesTotal)} accent="#C69C4B" />
+        <StatCard icon="receipt" label="إجمالي قيمة فواتير المبيعات" value={fmt(salesTotal)} accent="#8A6A32" />
         <StatCard icon="alert" label="مواد ناقصة بالمخزون" value={lowStock.length} accent="#A34632" />
-        <StatCard icon="users" label="مستحقات العملاء" value={fmt(customerDebt)} accent="#A6673B" />
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
         <StatCard icon="users" label="مستحقات على العملاء" value={fmt(customerDebt)} accent="#A6673B" />
+        <StatCard icon="briefcase" label="مستحقات الموردين" value={fmt(supplierDebt)} accent="#5C4A38" />
         <div className="rounded-2xl border p-4 lg:col-span-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
           <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تنبيهات المخزون</h3>
           {lowStock.length === 0 ? <EmptyState icon="package" title="المخزون ضمن الحد الطبيعي" /> : (
@@ -797,8 +844,8 @@ function Dashboard({ invoices, lowStock, customerDebt, treasury, goInvoices }) {
           <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
             {recentInvoices.map((inv) => (
               <div key={inv.id} className="flex items-center justify-between py-2.5" style={{ borderColor: "var(--divider)" }}>
-                <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{inv.supplierName || inv.type}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{inv.type} · {inv.date}</div></div>
-                <div className="text-sm font-semibold" style={{ color: "var(--text-strong)" }}>{fmt(inv.amount)}</div>
+                <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{inv.contactName || inv.supplierName || inv.customerName || inv.type}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{inv.isReturn ? "مرتجع " : ""}{inv.type} · {inv.date}</div></div>
+                <div className="text-sm font-semibold" style={{ color: "var(--text-strong)" }}>{inv.isReturn ? "−" : ""}{fmt(inv.amount)}</div>
               </div>
             ))}
           </div>
@@ -853,6 +900,15 @@ function Projects({ projects, onOpen, onNew }) {
           })}
         </div>
       )}
+    </div>
+  );
+}
+
+function CompanyBadge({ size = 36, variant = "default" }) {
+  const bg = variant === "dark" ? "linear-gradient(135deg, #5d2c1e, #8c5b3a)" : "linear-gradient(135deg, #f3e4d6, #d7b99f)";
+  return (
+    <div className="flex items-center justify-center overflow-hidden rounded-xl" style={{ width: size, height: size, minWidth: size, background: bg, boxShadow: "inset 0 0 0 2px rgba(255,255,255,0.2)" }}>
+      <img src={COMPANY_LOGO_PATH} alt="شعار شركة القصر" style={{ width: "100%", height: "100%", objectFit: "cover", display: "block" }} />
     </div>
   );
 }
@@ -983,6 +1039,53 @@ function printProjectInvoice(project, income = []) {
   window.setTimeout(triggerPrint, 700);
 }
 
+function printInvoiceDocument(invoice, invoices = []) {
+  const printWindow = window.open("", "_blank", "width=900,height=700");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  const logoMarkup = `<img src="${COMPANY_LOGO_PATH}" alt="شعار شركة القصر" style="width:52px;height:52px;border-radius:14px;object-fit:cover;display:block" />`;
+  const lines = (invoice.items || []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.quantity)} ${escapeHtml(item.unit)}</td><td>${fmt(item.unitPrice)}</td><td>${fmt(item.total)}</td></tr>`).join("");
+  const title = invoice.isReturn ? "إشعار مرتجع" : invoice.direction === "purchase" ? "فاتورة مشتريات" : "فاتورة مبيعات";
+  const paid = getInvoicePaidAmount(invoice);
+  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:32px;color:#292524}h1{font-size:24px;margin-bottom:6px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #7a4423}.logo{width:52px;height:52px;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center}.meta{display:flex;justify-content:space-between;margin:22px 0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:10px;text-align:right}th{background:#f5f1ea}.totals{margin:20px 0 0 auto;width:280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.grand{font-weight:bold;border-top:2px solid #777;margin-top:8px}@media print{button{display:none}}</style></head><body><div class="brand"><div class="logo">${logoMarkup}</div><div><div style="font-size:23px;font-weight:800;color:#7a4423">شركة القصر</div><div style="font-size:12px;color:#6b645b">إدارة المحاسبة</div></div></div><h1>${title}</h1><div>${escapeHtml(invoice.contactName || invoice.supplierName || invoice.customerName || "")}</div><div class="meta"><span>رقم الفاتورة: ${escapeHtml(invoice.invoiceNumber || invoice.id)}</span><span>التاريخ: ${escapeHtml(invoice.date)}</span></div><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${lines}</tbody></table><div class="totals"><div><span>المجموع</span><span>${fmt(invoice.subtotal ?? invoice.amount)}</span></div><div><span>الخصم</span><span>${fmt(invoice.discount || 0)}</span></div><div class="grand"><span>الصافي</span><span>${fmt(invoice.amount)}</span></div><div><span>${invoice.isReturn ? "المبلغ المسوى نقدًا" : "المسدد"}</span><span>${fmt(paid)}</span></div><div><span>المتبقي</span><span>${fmt(invoice.isReturn ? 0 : getInvoiceOutstanding(invoice, invoices))}</span></div></div>${invoice.description ? `<p>ملاحظات: ${escapeHtml(invoice.description)}</p>` : ""}</body></html>`;
+  printWindow.document.open();
+  printWindow.document.write(printHtml);
+  printWindow.document.close();
+  const triggerPrint = () => { try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Invoice print failed:", error); } };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
+}
+
+function printAccountStatement(contact, transactions = [], label = "العميل", startDate = "", endDate = "") {
+  const printWindow = window.open("", "_blank", "width=1000,height=800");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة كشف الحساب."); return; }
+  const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
+  const rows = [...transactions].filter((row) => (!startDate || (row.date || "") >= startDate) && (!endDate || (row.date || "") <= endDate)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+  let runningDebit = 0;
+  let runningCredit = 0;
+  let runningBalance = 0;
+  const totalDebit = rows.reduce((sum, row) => sum + (row.type === "debit" ? Number(row.amount || 0) : 0), 0);
+  const totalCredit = rows.reduce((sum, row) => sum + (row.type === "credit" ? Number(row.amount || 0) : 0), 0);
+  const finalBalance = totalDebit - totalCredit;
+  const rowsHtml = rows.length ? rows.map((row, index) => {
+    const debit = row.type === "debit" ? Number(row.amount || 0) : 0;
+    const credit = row.type === "credit" ? Number(row.amount || 0) : 0;
+    runningDebit += debit;
+    runningCredit += credit;
+    runningBalance += debit - credit;
+    const kind = row.customerPayment ? "قبض" : row.supplierPayment ? "صرف" : row.invoiceDebt ? "فاتورة" : row.invoiceReturn ? "مرتجع" : row.type === "debit" ? "مدين" : "دائن";
+    return `<tr><td>${index + 1}</td><td>${escapeHtml(row.id || "-")}</td><td>${escapeHtml(kind)}</td><td>${fmt(debit)}</td><td>${fmt(credit)}</td><td>${escapeHtml(row.date || "-")}</td><td>${fmt(runningDebit)}</td><td>${fmt(runningCredit)}</td><td>${fmt(runningBalance)}</td><td>${escapeHtml(row.note || "-")}</td></tr>`;
+  }).join("") : `<tr><td colspan="10" style="text-align:center;padding:20px;color:#6b645b;">لا توجد حركات في هذه المدة</td></tr>`;
+  const logoMarkup = `<img src="${COMPANY_LOGO_PATH}" alt="شعار شركة القصر" style="width:58px;height:58px;border-radius:16px;object-fit:cover;display:block" />`;
+  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب ${escapeHtml(contact.name || label)}</title><style>body{font-family:Arial,sans-serif;margin:22px;color:#1f1b16;background:#fff}table{width:100%;border-collapse:collapse;border:1px solid #e3dbd0}th,td{border:1px solid #e3dbd0;padding:8px 6px;text-align:center;font-size:12px}th{background:#7a4423;color:#fff}tr:nth-child(even) td{background:#faf7f4}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:2px solid #7a4423;padding-bottom:12px;margin-bottom:16px}.logo{width:58px;height:58px;border-radius:16px;overflow:hidden}.meta{margin:10px 0}.meta .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #d8cfc5}.totals{margin-top:14px;display:flex;justify-content:space-between;gap:10px;font-weight:700}.totals div{padding:8px 10px;border:1px solid #e3dbd0;border-radius:8px;background:#faf7f4}</style></head><body><div class="top"><div class="logo">${logoMarkup}</div><div><div style="font-size:26px;font-weight:800;color:#7a4423">شركة القصر</div><div style="font-size:12px;color:#6b645b">إدارة المحاسبة</div></div><div style="text-align:left"><div>كشف حساب</div><div style="font-weight:700">${escapeHtml(label === "موردون" ? "المورد" : "العميل")}</div></div></div><div class="meta"><div class="row"><span>الاسم</span><b>${escapeHtml(contact.name || "-")}</b></div><div class="row"><span>المدة</span><b>${escapeHtml(startDate || "-")} إلى ${escapeHtml(endDate || "-")}</b></div></div><table><thead><tr><th>#</th><th>رقم السند</th><th>النوع</th><th>مدين</th><th>دائن</th><th>التاريخ</th><th>رصيد المدين</th><th>رصيد الدائن</th><th>الرصيد</th><th>ملاحظات</th></tr></thead><tbody>${rowsHtml}</tbody></table><div class="totals"><div>إجمالي المدين: ${fmt(totalDebit)}</div><div>إجمالي الدائن: ${fmt(totalCredit)}</div><div>الرصيد: ${fmt(finalBalance)}</div></div></body></html>`;
+  printWindow.document.open();
+  printWindow.document.write(printHtml);
+  printWindow.document.close();
+  const triggerPrint = () => { try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Statement print failed:", error); } };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
+}
+
 function WaiveInline({ remaining, waived, onApply, onReset }) {
   const [amount, setAmount] = useState("");
   const [note, setNote] = useState("");
@@ -1072,7 +1175,7 @@ function RecordIncomeInline({ project, onAdd }) {
   const [note, setNote] = useState("");
   const submit = () => {
     if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
-    onAdd({ id: uid(), date: todayISO(), amount: Number(amount), description: note.trim() || "دفعة من الزبون" });
+    onAdd({ id: uid(), date: todayISO(), amount: roundMoney(Number(amount)), description: note.trim() || "دفعة من الزبون" });
     setAmount(""); setNote("");
   };
   return (
@@ -1107,7 +1210,7 @@ function ProjectItems({ project, update }) {
         <div className="grid grid-cols-3 gap-2">
           <Select value={direction} onChange={(e) => setDirection(e.target.value)}><option value="إرسال">إرسال</option><option value="مرتجع">مرتجع</option><option value="إضافة">إضافة</option></Select>
           <TextInput list="item-suggestions" placeholder="اسم المادة" value={name} onChange={(e) => setName(e.target.value)} />
-          <Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>لتر</option><option>م</option><option>قطعة</option></Select>
+          <Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>كجم</option><option>طن</option><option>لتر</option><option>م</option><option>قطعة</option></Select>
         </div>
         <datalist id="item-suggestions">{ITEM_SUGGESTIONS.map((s) => <option key={s} value={s} />)}</datalist>
         <div className="flex gap-2"><TextInput type="number" placeholder="الكمية" value={quantity} onChange={(e) => setQuantity(e.target.value)} /><PrimaryButton onClick={addItem}><Icon name="plus" size={16} /> تسجيل</PrimaryButton></div>
@@ -1193,6 +1296,7 @@ function ProjectMeasurements({ project, update }) {
 // ---------- Invoices (with line items) ----------
 function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury, upsert, remove }) {
   const [showAdd, setShowAdd] = useState(false);
+  const [creatingReturn, setCreatingReturn] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState(null);
   const [contactQuery, setContactQuery] = useState("");
   const [invoiceNumberQuery, setInvoiceNumberQuery] = useState("");
@@ -1206,22 +1310,49 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
     const matchInvoiceNumber = !normalizedInvoiceNumberQuery || normalizeName(i.invoiceNumber).includes(normalizedInvoiceNumberQuery);
     return matchContact && matchInvoiceNumber && (i.direction || (mode === "purchase" ? "purchase" : "sale")) === mode;
   });
-  const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const total = filtered.reduce((s, i) => s + Number(i.amount || 0) * (i.isReturn ? -1 : 1), 0);
   const sorted = [...filtered].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const deleteInvoice = (invoice) => {
-    remove("invoices", invoice.id);
+    if (invoices.some((record) => record.isReturn && record.returnForInvoiceId === invoice.id)) {
+      notify("لا يمكن حذف الفاتورة الأصلية قبل حذف أو معالجة مرتجعاتها.");
+      return false;
+    }
+    const linkedCustomerPayments = customers.find((item) => item.id === (invoice.customerId || invoice.contactId))?.transactions || [];
+    const linkedSupplierPayments = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId))?.transactions || [];
+    if (linkedCustomerPayments.some((transaction) => transaction.customerPayment && transaction.invoiceId === invoice.id && transaction.id !== "invoice-payment-" + invoice.id)
+      || linkedSupplierPayments.some((transaction) => transaction.supplierPayment && transaction.id !== "invoice-payment-" + invoice.id && (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id))) {
+      notify("لا يمكن حذف الفاتورة قبل حذف دفعاتها المرتبطة.");
+      return false;
+    }
+    const stockChanges = new Map();
+    const inventoryValueChanges = new Map();
     (invoice.items || []).forEach((line) => {
-      const item = inventory.find((entry) => entry.id === line.inventoryId);
-      const delta = mode === "purchase" ? -Number(line.quantity || 0) : Number(line.quantity || 0);
-      if (item) {
-        upsert("inventory", { ...item, quantity: Math.max(0, Number(item.quantity || 0) + delta) });
-        upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice-delete", invoiceId: invoice.id, note: "عكس حذف الفاتورة" });
-      }
+      const item = inventory.find((entry) => entry.id === line.inventoryId || (!line.inventoryId && normalizeName(entry.name) === normalizeName(line.name)));
+      if (!item) return;
+      const delta = (mode === "purchase" ? -Number(line.quantity || 0) : Number(line.quantity || 0)) * (invoice.isReturn ? -1 : 1);
+      stockChanges.set(item.id, (stockChanges.get(item.id) || 0) + delta);
+      const cost = Number(line.costUnitPrice ?? (mode === "purchase" ? line.unitPrice : item.averageCost) ?? 0);
+      inventoryValueChanges.set(item.id, (inventoryValueChanges.get(item.id) || 0) - Number(line.quantity || 0) * cost * (mode === "purchase" ? 1 : -1) * (invoice.isReturn ? -1 : 1));
     });
+    for (const [itemId, delta] of stockChanges) {
+      const item = inventory.find((entry) => entry.id === itemId);
+      if (Number(item.quantity || 0) + delta < 0) {
+        notify(`لا يمكن حذف الفاتورة: مخزون «${item.name}» سيصبح سالبًا.`);
+        return false;
+      }
+    }
+    remove("invoices", invoice.id);
+    for (const [itemId, delta] of stockChanges) {
+      const item = inventory.find((entry) => entry.id === itemId);
+      const quantity = roundMoney(Number(item.quantity || 0) + delta);
+      const inventoryValue = Number(item.quantity || 0) * Number(item.averageCost || 0) + (inventoryValueChanges.get(itemId) || 0);
+      upsert("inventory", { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 });
+      upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice-delete", invoiceId: invoice.id, note: "عكس حذف الفاتورة" });
+    }
     const currentTreasury = treasury?.[0];
     if (currentTreasury) upsert("treasury", { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id) });
     const supplier = suppliers.find((item) => item.id === invoice.supplierId);
-    if (supplier) upsert("suppliers", { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) });
+    if (supplier) upsert("suppliers", { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) });
     const customer = customers.find((item) => item.id === invoice.customerId);
     if (customer) upsert("customers", { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) });
   };
@@ -1232,27 +1363,68 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
   };
   const saveInvoice = (invoice) => {
     const previous = editingInvoice;
+    const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+    const paidAmount = Math.min(Number(invoice.amount || 0), Math.max(0, Number(invoice.paidAmount || 0)));
+    const laterPaidAmount = getInvoiceLaterPaymentsAmount(invoice, customers, suppliers);
+    const initialPaidAmount = Math.min(Number(invoice.amount || 0), Math.max(0, Number(invoice.initialPaidAmount ?? (paidAmount - laterPaidAmount))));
+    const balanceWithoutInvoiceCash = Number(currentTreasury.openingBalance || 0) + (currentTreasury.transactions || []).filter((tx) => !(tx.invoiceId === invoice.id && (tx.source === "invoice" || tx.source === "invoice-return"))).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+    const cashSign = (mode === "purchase" ? -1 : 1) * (invoice.isReturn ? -1 : 1);
+    if (balanceWithoutInvoiceCash + cashSign * initialPaidAmount < 0) { notify("لا يمكن تسجيل الدفعة: رصيد الخزينة لا يكفي."); return false; }
     const previousItems = previous?.items || [];
     const nextItems = invoice.items || [];
     const stockChanges = new Map();
-    previousItems.forEach((item) => stockChanges.set(normalizeName(item.name), (stockChanges.get(normalizeName(item.name)) || 0) - Number(item.quantity || 0) * (mode === "purchase" ? 1 : -1)));
-    nextItems.forEach((item) => stockChanges.set(normalizeName(item.name), (stockChanges.get(normalizeName(item.name)) || 0) + Number(item.quantity || 0) * (mode === "purchase" ? 1 : -1)));
-    for (const item of inventory) {
-      const delta = stockChanges.get(normalizeName(item.name)) || 0;
-      if (delta) upsert("inventory", { ...item, quantity: Number(item.quantity || 0) + delta });
-      if (delta) upsert("inventoryMovements", { id: uid(), date: invoice.date, itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice", invoiceId: invoice.id, note: mode === "purchase" ? "فاتورة شراء" : "فاتورة بيع" });
+    const inventoryValueChanges = new Map();
+    const addStockChange = (line, multiplier) => {
+      const item = inventory.find((entry) => entry.id === line.inventoryId || (!line.inventoryId && normalizeName(entry.name) === normalizeName(line.name)));
+      if (!item) return;
+      stockChanges.set(item.id, (stockChanges.get(item.id) || 0) + multiplier * Number(line.quantity || 0) * (mode === "purchase" ? 1 : -1) * (invoice.isReturn ? -1 : 1));
+      const cost = Number(line.costUnitPrice ?? (mode === "purchase" ? line.unitPrice : item.averageCost) ?? 0);
+      inventoryValueChanges.set(item.id, (inventoryValueChanges.get(item.id) || 0) + multiplier * Number(line.quantity || 0) * cost * (mode === "purchase" ? 1 : -1) * (invoice.isReturn ? -1 : 1));
+    };
+    previousItems.forEach((item) => addStockChange(item, -1));
+    nextItems.forEach((item) => addStockChange(item, 1));
+    for (const [itemId, delta] of stockChanges) {
+      const item = inventory.find((entry) => entry.id === itemId);
+      if (Number(item.quantity || 0) + delta < 0) {
+        notify(`لا يمكن حفظ الفاتورة: مخزون «${item.name}» سيصبح سالبًا.`);
+        return;
+      }
     }
-    const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
-    const treasuryTransaction = { id: uid(), date: invoice.date, direction: mode === "purchase" ? "out" : "in", amount: Number(invoice.amount), source: "invoice", invoiceId: invoice.id, note: mode === "purchase" ? "دفع فاتورة شراء" : "قبض فاتورة بيع" };
-    upsert("treasury", { ...currentTreasury, transactions: [treasuryTransaction, ...(currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id)] });
+    for (const [itemId, delta] of stockChanges) {
+      const item = inventory.find((entry) => entry.id === itemId);
+      const valueChange = inventoryValueChanges.get(itemId) || 0;
+      if (!delta && !valueChange) continue;
+      const quantity = roundMoney(Number(item.quantity || 0) + delta);
+      const inventoryValue = Number(item.quantity || 0) * Number(item.averageCost || 0) + valueChange;
+      upsert("inventory", { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 });
+      if (delta) upsert("inventoryMovements", { id: uid(), date: invoice.date, itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: invoice.isReturn ? "invoice-return" : "invoice", invoiceId: invoice.id, note: invoice.isReturn ? "مرتجع فاتورة" : mode === "purchase" ? "فاتورة شراء" : "فاتورة بيع" });
+    }
+    const previousCash = (currentTreasury.transactions || []).filter((tx) => !(tx.invoiceId === invoice.id && (tx.source === "invoice" || tx.source === "invoice-return")));
+    const cashDirection = mode === "purchase" ? "out" : "in";
+    const effectiveCashDirection = invoice.isReturn ? (cashDirection === "in" ? "out" : "in") : cashDirection;
+    const treasuryTransactions = initialPaidAmount > 0 ? [{ id: "invoice-payment-" + invoice.id, date: invoice.date, direction: effectiveCashDirection, amount: initialPaidAmount, source: invoice.isReturn ? "invoice-return" : "invoice", invoiceId: invoice.id, note: invoice.isReturn ? "تسوية نقدية لمرتجع" : mode === "purchase" ? "دفعة فاتورة شراء" : "دفعة فاتورة بيع" }, ...previousCash] : previousCash;
+    upsert("treasury", { ...currentTreasury, transactions: treasuryTransactions });
     if (mode === "sale" && invoice.contactId) {
       const customerIds = [...new Set([previous?.contactId, invoice.contactId].filter(Boolean))];
       customerIds.forEach((customerId) => {
         const customer = customers.find((item) => item.id === customerId);
         if (!customer) return;
         const isLegacyInvoiceMovement = (transaction) => previous && transaction.date === previous.date && Number(transaction.amount) === Number(previous.amount) && String(transaction.note || "").includes("فاتورة بيع");
-        const remaining = (customer.transactions || []).filter((transaction) => transaction.invoiceId !== invoice.id && transaction.id !== invoice.contactTransactionId && !isLegacyInvoiceMovement(transaction));
-        const nextTransactions = customerId === invoice.contactId ? [{ id: invoice.contactTransactionId, invoiceId: invoice.id, date: invoice.date, type: invoice.paymentStatus === "unpaid" ? "debit" : "info", amount: Number(invoice.amount), note: invoice.paymentStatus === "unpaid" ? "فاتورة بيع غير مسددة" : "فاتورة بيع مسددة" }, ...remaining] : remaining;
+        const recordedPaidAmount = (customer.transactions || []).filter((transaction) => transaction.invoiceId === invoice.id && transaction.customerPayment).reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+        const unrecordedPayment = Math.max(0, paidAmount - recordedPaidAmount);
+        const remaining = (customer.transactions || []).filter((transaction) => transaction.id !== invoice.contactTransactionId && !isLegacyInvoiceMovement(transaction) && !(transaction.invoiceId === invoice.id && (transaction.invoiceDebt || transaction.invoiceReturn)));
+        const invoiceTransactions = customerId === invoice.contactId
+          ? invoice.isReturn
+            ? [
+                ...(paidAmount > 0 ? [{ id: "invoice-return-refund-" + invoice.id, invoiceId: invoice.id, invoiceReturn: true, date: invoice.date, type: "debit", amount: paidAmount, note: "مبلغ معاد نقدًا عن مرتجع" }] : []),
+                { id: "invoice-return-" + invoice.id, invoiceId: invoice.id, invoiceReturn: true, date: invoice.date, type: "credit", amount: Number(invoice.amount), note: "مرتجع مبيعات" },
+              ]
+            : [
+                ...(unrecordedPayment > 0 ? [{ id: "invoice-payment-" + invoice.id, invoiceId: invoice.id, customerPayment: true, date: invoice.date, type: "credit", amount: unrecordedPayment, note: "دفعة عند إصدار الفاتورة" }] : []),
+                { id: invoice.contactTransactionId, invoiceId: invoice.id, invoiceDebt: true, date: invoice.date, type: "debit", amount: Number(invoice.amount), note: "فاتورة بيع" },
+              ]
+          : [];
+        const nextTransactions = [...invoiceTransactions, ...remaining];
         upsert("customers", { ...customer, transactions: nextTransactions });
       });
     }
@@ -1262,19 +1434,28 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
       supplierIds.forEach((supplierId) => {
         const supplier = suppliers.find((item) => item.id === supplierId);
         if (!supplier) return;
-        const remaining = (supplier.transactions || []).filter((transaction) => transaction.invoiceId !== invoice.id && transaction.id !== previous?.debtTransactionId && transaction.id !== invoice.debtTransactionId);
-        if (supplierId === invoice.contactId) remaining.unshift({ id: invoice.debtTransactionId || invoice.contactTransactionId, invoiceId: invoice.id, date: invoice.date, type: invoice.paymentStatus === "unpaid" ? "debit" : "info", amount: invoice.amount, note: invoice.paymentStatus === "unpaid" ? "فاتورة شراء غير مسددة" : "فاتورة شراء مسددة" });
+        const recordedPaidAmount = (supplier.transactions || []).filter((transaction) => transaction.supplierPayment).reduce((sum, transaction) => sum + (transaction.allocations || []).filter((allocation) => allocation.invoiceId === invoice.id).reduce((allocationSum, allocation) => allocationSum + Number(allocation.amount || 0), 0), 0);
+        const unrecordedPayment = Math.max(0, paidAmount - recordedPaidAmount);
+        const remaining = (supplier.transactions || []).filter((transaction) => transaction.id !== (previous?.debtTransactionId || invoice.debtTransactionId) && transaction.id !== previous?.contactTransactionId && !(transaction.invoiceId === invoice.id && (transaction.invoiceDebt || transaction.invoiceReturn)));
+        if (supplierId === invoice.contactId && invoice.isReturn) {
+          if (paidAmount > 0) remaining.unshift({ id: "invoice-return-refund-" + invoice.id, invoiceId: invoice.id, invoiceReturn: true, date: invoice.date, type: "debit", amount: paidAmount, note: "مبلغ مستلم نقدًا عن مرتجع" });
+          remaining.unshift({ id: "invoice-return-" + invoice.id, invoiceId: invoice.id, invoiceReturn: true, date: invoice.date, type: "credit", amount: invoice.amount, note: "مرتجع مشتريات" });
+        } else if (supplierId === invoice.contactId) {
+          if (unrecordedPayment > 0) remaining.unshift({ id: "invoice-payment-" + invoice.id, invoiceId: invoice.id, supplierPayment: true, date: invoice.date, type: "credit", amount: unrecordedPayment, note: "دفعة عند إصدار الفاتورة", allocations: [{ invoiceId: invoice.id, amount: unrecordedPayment }] });
+          remaining.unshift({ id: invoice.debtTransactionId || invoice.contactTransactionId, invoiceId: invoice.id, invoiceDebt: true, date: invoice.date, type: "debit", amount: invoice.amount, note: "فاتورة شراء" });
+        }
         upsert("suppliers", { ...supplier, transactions: remaining });
       });
     }
     setEditingInvoice(null);
+    return true;
   };
 
   return (
     <div className="flex flex-col gap-5">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>{mode === "purchase" ? "فواتير المشتريات" : "فواتير المبيعات"}</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>{mode === "purchase" ? "فواتير الموردين والبنود الداخلة إلى المخزن" : "فواتير العملاء والبنود الخارجة من المخزن"}</p></div>
-        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> فاتورة {mode === "purchase" ? "شراء" : "بيع"}</PrimaryButton>
+        <div className="flex gap-2"><GhostButton onClick={() => { setCreatingReturn(true); setShowAdd(true); }}><Icon name="rotate" size={15} /> مرتجع {mode === "purchase" ? "شراء" : "بيع"}</GhostButton><PrimaryButton onClick={() => { setCreatingReturn(false); setShowAdd(true); }}><Icon name="plus" size={16} /> فاتورة {mode === "purchase" ? "شراء" : "بيع"}</PrimaryButton></div>
       </div>
       <div className="flex items-center gap-3 flex-wrap">
         <div className="relative min-w-[180px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span><TextInput value={contactQuery} onChange={(e) => setContactQuery(e.target.value)} placeholder={`بحث باسم ${mode === "purchase" ? "المورد" : "العميل"}...`} className="pr-9" /></div>
@@ -1292,6 +1473,8 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                       {inv.contactName || inv.supplierName || inv.customerName || "بدون اسم"} {inv.invoiceNumber && <span className="text-xs font-normal" style={{ color: "var(--text-muted)" }}>#{inv.invoiceNumber}</span>}
                     </div>
                     <div className="text-xs flex items-center gap-1.5 mt-0.5 flex-wrap" style={{ color: "var(--text-muted)" }}>
+                      {inv.isReturn && <Badge bg="var(--warn-bg)" fg="#A34632">مرتجع</Badge>}
+                      {!inv.isReturn && <Badge bg={getInvoicePaymentStatus(inv, invoices) === "paid" ? "var(--good-bg)" : "var(--warn-bg)"} fg={getInvoicePaymentStatus(inv, invoices) === "paid" ? "#4B6350" : "#A34632"}>{getInvoicePaymentStatus(inv, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(inv, invoices) === "partial" ? "جزئية" : "غير مسددة"}</Badge>}
                       {inv.date}
                       {(inv.items || []).length > 0 && <span>· {inv.items.length} بند</span>}
                     </div>
@@ -1301,6 +1484,9 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                 {expanded === inv.id && (
                   <div className="px-4 pb-3 flex flex-col gap-2">
                     {inv.description && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{inv.description}</div>}
+                    {Number(inv.discount || 0) > 0 && <div className="text-xs" style={{ color: "var(--text-muted)" }}>خصم: {fmt(inv.discount)}</div>}
+                    {!inv.isReturn && <div className="text-xs" style={{ color: "var(--text-muted)" }}>المسدد: {fmt(getInvoicePaidAmount(inv))} · المتبقي بعد المرتجعات: {fmt(getInvoiceOutstanding(inv, invoices))}</div>}
+                    {inv.isReturn && <div className="text-xs" style={{ color: "var(--text-muted)" }}>مرتجع للفاتورة #{invoices.find((item) => item.id === inv.returnForInvoiceId)?.invoiceNumber || inv.returnForInvoiceId} · النقدي المسوى: {fmt(inv.paidAmount || 0)}</div>}
                     {(inv.items || []).length > 0 && (
                       <div className="rounded-lg p-2.5 flex flex-col gap-1" style={{ background: "var(--divider)" }}>
                         {inv.items.map((it, idx) => (
@@ -1312,7 +1498,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                       </div>
                     )}
                     <div className="flex justify-end">
-                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{mode === "sale" && <button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
                     </div>
                   </div>
                 )}
@@ -1321,8 +1507,8 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
           </div>
         </div>
       )}
-      {showAdd && <Modal title={`فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} onAdd={(inv) => { saveInvoice(inv); setShowAdd(false); }} /></Modal>}
-      {editingInvoice && <Modal title="تعديل الفاتورة" onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
+      {showAdd && <Modal title={creatingReturn ? `مرتجع ${mode === "purchase" ? "شراء" : "بيع"}` : `فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} startAsReturn={creatingReturn} onAdd={(inv) => { if (saveInvoice(inv)) setShowAdd(false); }} /></Modal>}
+      {editingInvoice && <Modal title={editingInvoice.isReturn ? "تعديل المرتجع" : "تعديل الفاتورة"} onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
     </div>
   );
 }
@@ -1347,44 +1533,92 @@ function InvoiceContactPicker({ mode, contacts, contactId, contactName, onSelect
   </div>;
 }
 
-function AddInvoiceForm({ onAdd, mode, inventory, contacts, suppliers, upsert, initialInvoice = null }) {
+function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, suppliers, upsert, initialInvoice = null, startAsReturn = false }) {
   const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoiceNumber || "");
   const [contactId, setContactId] = useState(initialInvoice?.contactId || initialInvoice?.supplierId || "");
   const [contactName, setContactName] = useState(initialInvoice?.contactName || initialInvoice?.supplierName || initialInvoice?.customerName || "");
   const [amount, setAmount] = useState(initialInvoice?.amount ? String(initialInvoice.amount) : "");
   const [date, setDate] = useState(initialInvoice?.date || todayISO());
   const [description, setDescription] = useState(initialInvoice?.description || "");
-  const [paymentStatus, setPaymentStatus] = useState(initialInvoice?.paymentStatus || (initialInvoice?.debtTransactionId ? "unpaid" : "paid"));
+  const [paymentStatus, setPaymentStatus] = useState(initialInvoice ? initialInvoice.paymentStatus || (initialInvoice.debtTransactionId ? "unpaid" : "paid") : "unpaid");
+  const [discount, setDiscount] = useState(String(initialInvoice?.discount || 0));
+  const [paidAmount, setPaidAmount] = useState(String(initialInvoice ? getInvoiceInitialPaidAmount(initialInvoice) : 0));
+  const [isReturn, setIsReturn] = useState(Boolean(initialInvoice?.isReturn || startAsReturn));
+  const [returnForInvoiceId, setReturnForInvoiceId] = useState(initialInvoice?.returnForInvoiceId || "");
   const [items, setItems] = useState(initialInvoice?.items?.length ? initialInvoice.items : [{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
 
-  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
+  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(roundMoney(Number(next.quantity) * Number(next.unitPrice))); return next; }));
   const addRow = () => setItems((prev) => [...prev, { inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
   const removeRow = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
-  const itemsTotal = items.reduce((s, it) => s + Number(it.total || 0), 0);
-  const effectiveAmount = itemsTotal > 0 ? itemsTotal : Number(amount || 0);
+  const itemsTotal = roundMoney(items.reduce((s, it) => s + Number(it.total || 0), 0));
+  const subtotal = itemsTotal > 0 ? itemsTotal : Number(amount || 0);
+  const effectiveAmount = roundMoney(Math.max(0, subtotal - Number(discount || 0)));
+  const returnSource = invoices.find((invoice) => invoice.id === returnForInvoiceId && !invoice.isReturn && (invoice.direction || (invoice.type === "شراء" ? "purchase" : "sale")) === mode);
+  const returnLines = getRemainingInvoiceLines(returnSource, invoices, initialInvoice);
 
   useEffect(() => {
     const contact = contacts.find((item) => item.id === contactId);
     if (contact) setContactName(contact.name);
   }, [contactId, contacts]);
+  useEffect(() => {
+    if (!initialInvoice && paymentStatus === "paid") setPaidAmount(String(effectiveAmount));
+  }, [effectiveAmount, paymentStatus, initialInvoice]);
 
   const submit = () => {
     if (!positiveNumber(effectiveAmount) || Number(effectiveAmount) < 0) { notify("مبلغ الفاتورة يجب أن يكون موجبًا."); return; }
+    if (!nonNegativeNumber(discount) || Number(discount) > subtotal) { notify("الخصم يجب أن يكون غير سالب ولا يتجاوز إجمالي الفاتورة."); return; }
+    if (!nonNegativeNumber(paidAmount) || Number(paidAmount) > effectiveAmount) { notify("المبلغ المدفوع يجب أن يكون بين صفر وإجمالي الفاتورة."); return; }
+    if (initialInvoice && getInvoicePaidAmount(initialInvoice) + getInvoiceReturnedAmount(initialInvoice.id, invoices) > effectiveAmount) { notify("لا يمكن تخفيض قيمة الفاتورة إلى أقل من المسدد والمرتجعات المسجلة."); return; }
     if (!contactId) { notify(`اختر ${mode === "purchase" ? "المورد" : "العميل"} أولًا.`); return; }
-    const cleanItems = items.filter((it) => it.inventoryId && positiveNumber(it.quantity) && positiveNumber(it.total)).map((it) => ({ inventoryId: it.inventoryId, name: it.name.trim(), quantity: Number(it.quantity), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: Number(it.total) }));
+    if (isReturn && !returnSource) { notify("اختر الفاتورة الأصلية للمرتجع."); return; }
+    const purchaseCostFactor = mode === "purchase" && !isReturn && subtotal > 0 ? effectiveAmount / subtotal : 1;
+    const cleanItems = items.filter((it) => it.inventoryId && positiveNumber(it.quantity) && positiveNumber(it.total)).map((it) => {
+      const inventoryItem = inventory.find((entry) => entry.id === it.inventoryId);
+      const costUnitPrice = mode === "purchase"
+        ? isReturn ? Number(it.costUnitPrice ?? it.unitPrice ?? 0) : roundMoney(Number(it.total || 0) / Number(it.quantity || 1) * purchaseCostFactor)
+        : Number(it.costUnitPrice ?? inventoryItem?.averageCost ?? 0);
+      return { inventoryId: it.inventoryId, name: it.name.trim(), quantity: Number(it.quantity), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: roundMoney(Number(it.total)), costUnitPrice };
+    });
     if (!cleanItems.length) { notify("اختر صنفًا من المخزن وأدخل كمية وسعرًا صحيحين."); return; }
+    if (isReturn) {
+      const returned = new Map();
+      cleanItems.forEach((line) => returned.set(line.inventoryId, (returned.get(line.inventoryId) || 0) + line.quantity));
+      for (const [itemId, quantity] of returned) {
+        const sourceQuantity = (returnSource.items || []).filter((line) => line.inventoryId === itemId).reduce((sum, line) => sum + Number(line.quantity || 0), 0);
+        const alreadyReturned = getInvoiceReturnedQuantity(returnSource.id, itemId, invoices) - Number((initialInvoice?.items || []).filter((line) => line.inventoryId === itemId).reduce((sum, line) => sum + Number(line.quantity || 0), 0));
+        if (quantity > sourceQuantity - alreadyReturned) { notify(`كمية المرتجع تتجاوز المتبقي من «${inventory.find((item) => item.id === itemId)?.name || "الصنف"}».`); return; }
+      }
+      const alreadyReturnedValue = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === returnSource.id && invoice.id !== initialInvoice?.id).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
+      if (effectiveAmount > Number(returnSource.amount || 0) - alreadyReturnedValue) { notify("قيمة المرتجع تتجاوز المتبقي من قيمة الفاتورة الأصلية."); return; }
+      const sourcePaid = getInvoicePaidAmount(returnSource);
+      const alreadyRefunded = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === returnSource.id && invoice.id !== initialInvoice?.id).reduce((sum, invoice) => sum + Number(invoice.paidAmount || 0), 0);
+      if (Number(paidAmount) > sourcePaid - alreadyRefunded) { notify("المبلغ النقدي المعاد يتجاوز ما دُفع على الفاتورة الأصلية."); return; }
+    } else if (initialInvoice) {
+      const returns = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === initialInvoice.id);
+      if (returns.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0) > effectiveAmount) { notify("لا يمكن تخفيض قيمة الفاتورة إلى أقل من قيمة مرتجعاتها المسجلة."); return; }
+      const returnedByItem = new Map();
+      returns.forEach((invoice) => (invoice.items || []).forEach((line) => returnedByItem.set(line.inventoryId, (returnedByItem.get(line.inventoryId) || 0) + Number(line.quantity || 0))));
+      for (const [itemId, quantity] of returnedByItem) {
+        if (cleanItems.filter((line) => line.inventoryId === itemId).reduce((sum, line) => sum + line.quantity, 0) < quantity) { notify("لا يمكن حذف أو تقليل صنف له مرتجعات مسجلة."); return; }
+      }
+    }
     const stockById = new Map(inventory.map((item) => [item.id, item]));
-    if (mode === "sale") {
+    if ((mode === "sale" && !isReturn) || (mode === "purchase" && isReturn)) {
       const requested = new Map();
       cleanItems.forEach((item) => requested.set(item.inventoryId, (requested.get(item.inventoryId) || 0) + item.quantity));
       for (const [id, quantity] of requested) if (!stockById.has(id) || Number(stockById.get(id).quantity || 0) + (initialInvoice?.items || []).filter((item) => item.inventoryId === id).reduce((sum, item) => sum + Number(item.quantity || 0), 0) < quantity) { notify(`الكمية المطلوبة من «${stockById.get(id)?.name || "الصنف"}» غير متوفرة في المخزن.`); return; }
     }
     const invoiceId = initialInvoice?.id || uid();
-    const debtTransactionId = paymentStatus === "unpaid" && contactId ? (initialInvoice?.debtTransactionId || "invoice-debt-" + invoiceId) : null;
+    const actualPaidAmount = initialInvoice ? getInvoicePaidAmount(initialInvoice) : roundMoney(Number(paidAmount));
+    const initialPaidAmount = initialInvoice ? getInvoiceInitialPaidAmount(initialInvoice, customers, suppliers) : roundMoney(Number(paidAmount));
+    const actualPaymentStatus = isReturn
+      ? actualPaidAmount >= effectiveAmount ? "paid" : actualPaidAmount > 0 ? "partial" : "unpaid"
+      : getInvoicePaymentStatus({ id: invoiceId, amount: effectiveAmount, paidAmount: actualPaidAmount }, invoices);
+    const debtTransactionId = mode === "purchase" && !isReturn && contactId ? (initialInvoice?.debtTransactionId || "invoice-debt-" + invoiceId) : null;
     const inv = {
       id: invoiceId, invoiceNumber: invoiceNumber.trim(), type: mode === "purchase" ? "شراء" : "بيع", direction: mode, contactId: contactId || null, contactName: contactName.trim(),
       supplierId: mode === "purchase" ? (contactId || null) : null, supplierName: mode === "purchase" ? contactName.trim() : "", customerId: mode === "sale" ? (contactId || null) : null, customerName: mode === "sale" ? contactName.trim() : "",
-      amount: effectiveAmount, date, description: description.trim(), items: cleanItems, paymentStatus, debtTransactionId, contactTransactionId: initialInvoice?.contactTransactionId || "invoice-contact-" + invoiceId,
+      amount: effectiveAmount, subtotal: roundMoney(subtotal), discount: roundMoney(Number(discount)), paidAmount: actualPaidAmount, initialPaidAmount, date, description: description.trim(), items: cleanItems, paymentStatus: actualPaymentStatus, debtTransactionId, contactTransactionId: initialInvoice?.contactTransactionId || "invoice-contact-" + invoiceId, isReturn, returnForInvoiceId: isReturn ? returnForInvoiceId : null,
     };
     onAdd(inv);
   };
@@ -1394,18 +1628,32 @@ function AddInvoiceForm({ onAdd, mode, inventory, contacts, suppliers, upsert, i
       <div>
         <FieldLabel>رقم الفاتورة (اختياري)</FieldLabel><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
       </div>
-      <div><FieldLabel>{mode === "purchase" ? "المورد" : "العميل"}</FieldLabel><InvoiceContactPicker mode={mode} contacts={contacts} contactId={contactId} contactName={contactName} onSelect={(id) => { const contact = contacts.find((item) => item.id === id); setContactId(id || ""); setContactName(contact?.name || ""); }} onCreate={(contact) => { upsert(mode === "purchase" ? "suppliers" : "customers", contact); setContactId(contact.id); setContactName(contact.name); }} /></div>
+      {!initialInvoice && <label className="flex items-center gap-2 text-sm" style={{ color: "var(--text-body)" }}><input type="checkbox" checked={isReturn} onChange={(e) => { setIsReturn(e.target.checked); setReturnForInvoiceId(""); setItems([{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]); setPaidAmount(e.target.checked ? "0" : String(effectiveAmount)); setPaymentStatus(e.target.checked ? "unpaid" : "paid"); }} /> إشعار مرتجع مرتبط بفاتورة أصلية</label>}
+      {isReturn && <div><FieldLabel>الفاتورة الأصلية</FieldLabel><Select value={returnForInvoiceId} disabled={Boolean(initialInvoice)} onChange={(e) => {
+        const id = e.target.value;
+        const source = invoices.find((invoice) => invoice.id === id);
+        setReturnForInvoiceId(id);
+        if (!source) return;
+        const sourceContactId = source.contactId || source.supplierId || source.customerId;
+        setContactId(sourceContactId || "");
+        setContactName(source.contactName || source.supplierName || source.customerName || "");
+        const lines = getRemainingInvoiceLines(source, invoices);
+        setItems(lines.map((line) => ({ inventoryId: line.inventoryId, name: line.name, quantity: "", unit: line.unit, unitPrice: String(line.unitPrice || 0), total: "", costUnitPrice: Number(line.costUnitPrice || 0) })));
+        setDiscount("0"); setPaidAmount("0"); setPaymentStatus("unpaid");
+      }}><option value="">اختر الفاتورة الأصلية</option>{invoices.filter((invoice) => !invoice.isReturn && (invoice.direction || (invoice.type === "شراء" ? "purchase" : "sale")) === mode).map((invoice) => <option key={invoice.id} value={invoice.id}>#{invoice.invoiceNumber || invoice.id} · {invoice.date} · {fmt(invoice.amount)}</option>)}</Select></div>}
+      <div><FieldLabel>{mode === "purchase" ? "المورد" : "العميل"}</FieldLabel>{isReturn || initialInvoice ? <TextInput value={contactName} disabled /> : <InvoiceContactPicker mode={mode} contacts={contacts} contactId={contactId} contactName={contactName} onSelect={(id) => { const contact = contacts.find((item) => item.id === id); setContactId(id || ""); setContactName(contact?.name || ""); }} onCreate={(contact) => { upsert(mode === "purchase" ? "suppliers" : "customers", contact); setContactId(contact.id); setContactName(contact.name); }} />}</div>
       <div className="flex items-center gap-3 text-xs" style={{ color: "var(--text-body)" }}>
-        <span>حالة السداد:</span>
-        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" value="paid" checked={paymentStatus === "paid"} onChange={() => setPaymentStatus("paid")} /> مسددة</label>
-        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" value="unpaid" checked={paymentStatus === "unpaid"} onChange={() => setPaymentStatus("unpaid")} /> غير مسددة</label>
+        <span>{isReturn ? "تسوية المرتجع:" : "حالة السداد:"}</span>
+        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" checked={paymentStatus === "paid"} disabled={Boolean(initialInvoice)} onChange={() => { setPaymentStatus("paid"); setPaidAmount(String(effectiveAmount)); }} /> مسددة</label>
+        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" checked={paymentStatus === "partial"} disabled={Boolean(initialInvoice)} onChange={() => { setPaymentStatus("partial"); setPaidAmount(""); }} /> دفعة جزئية</label>
+        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" checked={paymentStatus === "unpaid"} disabled={Boolean(initialInvoice)} onChange={() => { setPaymentStatus("unpaid"); setPaidAmount("0"); }} /> غير مسددة</label>
       </div>
 
       <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
           <FieldLabel>بنود الفاتورة من المخزن</FieldLabel>
         {items.map((it, idx) => (
           <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
-            <div className="col-span-2 sm:col-span-3 min-w-0"><Select value={it.inventoryId} onChange={(e) => { const item = inventory.find((entry) => entry.id === e.target.value); setItem(idx, { inventoryId: e.target.value, name: item?.name || "", unit: item?.unit || "كيس" }); }}><option value="">اختر من المخزن</option>{inventory.map((item) => <option key={item.id} value={item.id}>{item.name} ({fmt(item.quantity)} {item.unit})</option>)}</Select></div>
+            <div className="col-span-2 sm:col-span-3 min-w-0"><Select value={it.inventoryId} onChange={(e) => { const item = inventory.find((entry) => entry.id === e.target.value); const returnLine = returnLines.find((line) => line.inventoryId === e.target.value); setItem(idx, { inventoryId: e.target.value, name: item?.name || returnLine?.name || "", unit: returnLine?.unit || item?.unit || "كيس", unitPrice: isReturn ? String(returnLine?.unitPrice || 0) : it.unitPrice, costUnitPrice: Number(returnLine?.costUnitPrice ?? item?.averageCost ?? 0) }); }}><option value="">اختر من المخزن</option>{(isReturn ? returnLines : inventory).map((item) => <option key={item.inventoryId || item.id} value={item.inventoryId || item.id}>{item.name} ({isReturn ? `متاح ${fmt(item.returnable)} ${item.unit}` : `${fmt(item.quantity)} ${item.unit}`})</option>)}</Select></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="كمية" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput placeholder="وحدة" value={it.unit} onChange={(e) => setItem(idx, { unit: e.target.value })} /></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="السعر" value={it.unitPrice} onChange={(e) => setItem(idx, { unitPrice: e.target.value })} /></div>
@@ -1420,6 +1668,11 @@ function AddInvoiceForm({ onAdd, mode, inventory, contacts, suppliers, upsert, i
         <div><FieldLabel>{itemsTotal > 0 ? "المبلغ الإجمالي (محسوب من البنود)" : "المبلغ الإجمالي"}</FieldLabel><TextInput type="number" value={itemsTotal > 0 ? itemsTotal : amount} onChange={(e) => setAmount(e.target.value)} disabled={itemsTotal > 0} /></div>
         <div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
       </div>
+      <div className="grid grid-cols-2 gap-3">
+        <div><FieldLabel>الخصم</FieldLabel><TextInput type="number" min="0" value={discount} onChange={(e) => setDiscount(e.target.value)} /></div>
+        <div><FieldLabel>صافي الفاتورة</FieldLabel><TextInput type="number" value={effectiveAmount} disabled /></div>
+      </div>
+      <div><FieldLabel>{isReturn ? "المبلغ المعاد / المستلم نقدًا" : "المبلغ المقبوض / المدفوع الآن"}</FieldLabel><TextInput type="number" min="0" max={effectiveAmount} value={paidAmount} disabled={Boolean(initialInvoice)} onChange={(e) => { setPaidAmount(e.target.value); setPaymentStatus(Number(e.target.value) >= effectiveAmount ? "paid" : Number(e.target.value) > 0 ? "partial" : "unpaid"); }} /></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
       <PrimaryButton onClick={submit} full disabled={!effectiveAmount}><Icon name="plus" size={16} /> {initialInvoice ? "حفظ تعديل الفاتورة" : "حفظ الفاتورة"}</PrimaryButton>
     </div>
@@ -1507,7 +1760,7 @@ function AddExpenseForm({ onAdd, initialExpense = null }) {
   const [amount, setAmount] = useState(initialExpense?.amount ? String(initialExpense.amount) : "");
   const [date, setDate] = useState(initialExpense?.date || todayISO());
   const [description, setDescription] = useState(initialExpense?.description || "");
-  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: initialExpense?.id || uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: initialExpense?.id || uid(), type, amount: roundMoney(Number(amount)), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>نوع المصروف</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}>{EXPENSE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
@@ -1523,7 +1776,7 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
   const [amount, setAmount] = useState(initialIncome?.amount ? String(initialIncome.amount) : "");
   const [date, setDate] = useState(initialIncome?.date || todayISO());
   const [description, setDescription] = useState(initialIncome?.description || "");
-  const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: roundMoney(Number(amount)), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div>
@@ -1546,7 +1799,7 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
 }
 
 // ---------- Accounts (customers / workers / suppliers ledger) ----------
-function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, upsert, remove, projects = [], income = [], onOpenProject }) {
+function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, treasury, upsert, remove, projects = [], income = [], onOpenProject }) {
   const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
   const current = KINDS[sub];
   return (
@@ -1559,18 +1812,19 @@ function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, ups
           </button>
         ))}
       </div>
-      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
     </div>
   );
 }
 
-function ContactsList({ kind, label, icon, collection, data, invoices, upsert, remove, projects, income, onOpenProject }) {
+function ContactsList({ kind, label, icon, collection, data, invoices, treasury, upsert, remove, projects, income, onOpenProject }) {
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
   const filtered = data.filter((c) => !query || c.name.includes(query));
   const open = data.find((c) => c.id === openId);
   const relatedProjects = null;
+  const hasLinkedInvoices = (contact) => invoices.some((invoice) => (invoice.contactId || invoice.customerId || invoice.supplierId) === contact.id);
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3 flex-wrap">
@@ -1602,7 +1856,7 @@ function ContactsList({ kind, label, icon, collection, data, invoices, upsert, r
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} icon={icon} invoices={invoices} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
+      {open && <ContactDetail contact={open} label={label} icon={icon} invoices={invoices} treasury={treasury} upsert={upsert} canDelete={!hasLinkedInvoices(open)} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onTreasurySave={(record) => upsert("treasury", record)} onInvoiceSave={(invoice) => upsert("invoices", invoice)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
     </div>
   );
 }
@@ -1626,20 +1880,26 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
+function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, canDelete = true, onClose, onSave, onTreasurySave, onInvoiceSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
-  const [txType, setTxType] = useState("debit");
-  const [txAmount, setTxAmount] = useState("");
-  const [txNote, setTxNote] = useState("");
+  const [statementStart, setStatementStart] = useState("");
+  const [statementEnd, setStatementEnd] = useState("");
+  const [showStatement, setShowStatement] = useState(false);
+  const [expandedInvoiceId, setExpandedInvoiceId] = useState(null);
   const [pendingTxDelete, setPendingTxDelete] = useState(null);
-  const [supplierPaymentAmount, setSupplierPaymentAmount] = useState("");
-  const [supplierPaymentDate, setSupplierPaymentDate] = useState(todayISO());
-  const [supplierPaymentNote, setSupplierPaymentNote] = useState("");
   useEffect(() => setLocal(contact), [contact.id]);
   const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
   const balance = contactBalance(local);
   const transactions = local.transactions || [];
+  const linkedInvoices = (invoices || []).filter((invoice) => {
+    const invoiceContactId = invoice.contactId || invoice.customerId || invoice.supplierId;
+    if (!invoiceContactId || invoiceContactId !== local.id) return false;
+    if (label === "عملاء") return (invoice.direction || "sale") === "sale";
+    if (label === "موردون") return (invoice.direction || "purchase") === "purchase";
+    return true;
+  }).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const expandedInvoice = linkedInvoices.find((invoice) => invoice.id === expandedInvoiceId) || null;
   const supplierStatement = label === "موردون" ? getSupplierStatement(local, invoices) : null;
   const isDuplicateName = hasDuplicateName(existing, local.name);
   const projectTotals = (relatedProjects || []).reduce((summary, project) => {
@@ -1649,20 +1909,28 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
   const projectRemaining = projectTotals.remaining;
   const grandTotal = balance + projectRemaining - projectTotals.surplus;
 
-  const addTx = () => {
-    if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
-    const tx = { id: uid(), date: todayISO(), type: txType, amount: Number(txAmount), note: txNote.trim() };
-    update({ transactions: [tx, ...transactions] });
-    setTxAmount(""); setTxNote("");
-  };
-  const removeTx = (id) => { update({ transactions: transactions.filter((t) => t.id !== id) }); setPendingTxDelete(null); };
-  const addSupplierPayment = () => {
-    if (!positiveNumber(supplierPaymentAmount)) { notify("أدخل مبلغ سداد موجبًا."); return; }
-    const amount = Number(supplierPaymentAmount);
-    const payment = { id: uid(), date: supplierPaymentDate || todayISO(), type: "credit", amount, note: supplierPaymentNote.trim() || "سداد عام للمورد", supplierPayment: true, allocations: allocateSupplierPayment(local, invoices, amount) };
-    update({ transactions: [payment, ...transactions] });
-    setSupplierPaymentAmount(""); setSupplierPaymentNote(""); setSupplierPaymentDate(todayISO());
-    notify(payment.allocations.length ? "تم تسجيل السداد وتوزيعه على أقدم الفواتير." : "تم تسجيل السداد كرصيد لنا عند المورد.", "success");
+  const removeTx = (id) => {
+    const transaction = transactions.find((item) => item.id === id);
+    if (!transaction || transaction.invoiceDebt) { setPendingTxDelete(null); return; }
+    update({ transactions: transactions.filter((t) => t.id !== id) });
+    if (transaction.customerPayment || transaction.supplierPayment) {
+      const record = treasury?.[0];
+      if (record) onTreasurySave({ ...record, transactions: (record.transactions || []).filter((item) => item.paymentId !== id && item.id !== id) });
+      const allocations = transaction.supplierPayment ? transaction.allocations || [] : transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : [];
+      allocations.forEach((allocation) => {
+        const invoice = invoices.find((item) => item.id === allocation.invoiceId);
+        if (!invoice) return;
+        const paid = getInvoicePaidAmount(invoice);
+        const paidAmount = roundMoney(Math.max(0, paid - Number(allocation.amount || 0)));
+        onInvoiceSave({
+          ...invoice,
+          paidAmount,
+          initialPaidAmount: invoice.initialPaidAmount ?? Math.max(0, Number(invoice.paidAmount || 0) - getInvoiceLaterPaymentsAmount(invoice, customers, suppliers)),
+          paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices),
+        });
+      });
+    }
+    setPendingTxDelete(null);
   };
 
   return (
@@ -1681,26 +1949,151 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
           </span>
         </div>
 
-        {label === "موردون" && supplierStatement && (
+        <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <FieldLabel>كشف الحساب</FieldLabel>
+            <button
+              className="text-xs"
+              style={{ color: "var(--accent)" }}
+              onClick={() => setShowStatement(!showStatement)}
+            >
+              {showStatement ? "إخفاء كشف الحساب" : "عرض كشف الحساب"}
+            </button>
+          </div>
+
+          <div className="grid grid-cols-2 gap-2">
+            <div><FieldLabel>من تاريخ</FieldLabel><TextInput type="date" value={statementStart} onChange={(e) => setStatementStart(e.target.value)} /></div>
+            <div><FieldLabel>إلى تاريخ</FieldLabel><TextInput type="date" value={statementEnd} onChange={(e) => setStatementEnd(e.target.value)} /></div>
+          </div>
+
+          {showStatement && (
+            <div className="flex flex-col gap-3">
+              <div className="flex items-center justify-between gap-2 flex-wrap">
+                <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>معاينة كشف الحساب</div>
+                <button
+                  className="text-xs"
+                  style={{ color: "var(--accent)" }}
+                  onClick={() => {
+                    const rows = [...transactions].filter((row) => (!statementStart || (row.date || "") >= statementStart) && (!statementEnd || (row.date || "") <= statementEnd)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+                    printAccountStatement(local, rows, label, statementStart || "", statementEnd || "");
+                  }}
+                >
+                  عرض/طباعة كشف الحساب
+                </button>
+              </div>
+              <div className="overflow-auto rounded-lg border" style={{ borderColor: "var(--card-border)" }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+                  <thead>
+                    <tr style={{ background: "var(--divider)" }}>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>#</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رقم السند</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>النوع</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>مدين</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>دائن</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>التاريخ</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رصيد المدين</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رصيد الدائن</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>الرصيد</th>
+                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>ملاحظات</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {(() => {
+                      const rowsFiltered = [...transactions].filter((row) => (!statementStart || (row.date || "") >= statementStart) && (!statementEnd || (row.date || "") <= statementEnd)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
+                      let runningDebitTotal = 0;
+                      let runningCreditTotal = 0;
+                      let runningBalanceValue = 0;
+                      return rowsFiltered.length === 0 ? (
+                        <tr><td colSpan="10" className="px-2 py-3 text-xs text-center" style={{ color: "var(--text-muted)" }}>لا توجد حركات في هذه المدة</td></tr>
+                      ) : rowsFiltered.map((row, index) => {
+                        const debit = row.type === "debit" ? Number(row.amount || 0) : 0;
+                        const credit = row.type === "credit" ? Number(row.amount || 0) : 0;
+                        runningDebitTotal += debit;
+                        runningCreditTotal += credit;
+                        runningBalanceValue += debit - credit;
+                        return (
+                          <tr key={row.id || index} style={{ borderTop: "1px solid var(--divider)" }}>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{index + 1}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.id || "-"}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.customerPayment ? "قبض" : row.supplierPayment ? "صرف" : row.type === "debit" ? "مدين" : "دائن"}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(debit)}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(credit)}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.date || "-"}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningDebitTotal)}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningCreditTotal)}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningBalanceValue)}</td>
+                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.note || "-"}</td>
+                          </tr>
+                        );
+                      });
+                    })()}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          )}
+        </div>
+
+        <div className="flex flex-col gap-2">
+          <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>سجل حركة {label === "موردون" ? "المورد" : "العميل"}</div>
+          {transactions.length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات بعد</div> : (
+            <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+              {transactions.map((t) => (
+                <div key={t.id} className="flex items-center justify-between py-2.5 text-right" style={{ borderColor: "var(--divider)" }}>
+                  <div className="flex items-center gap-2 min-w-0">
+                    <Icon name={t.type === "debit" ? "trendUp" : "trendDown"} size={14} color={t.type === "debit" ? "#A34632" : "#4B6350"} />
+                    <div className="min-w-0"><div className="text-sm truncate" style={{ color: "var(--text-body)" }}>{t.note || (t.type === "debit" ? "زيادة دين" : "تسديد")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{t.date}{t.invoiceId ? " · فاتورة" : ""}</div></div>
+                  </div>
+                  <span className="font-medium" style={{ color: t.type === "debit" ? "#A34632" : "#4B6350" }}>{t.type === "debit" ? "+" : "−"}{fmt(t.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {linkedInvoices.length > 0 && (
           <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
-            <FieldLabel>الحساب العام للمورد</FieldLabel>
-            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
-              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>إجمالي الفواتير الآجلة</div><strong style={{ color: "var(--text-strong)" }}>{fmt(supplierStatement.totalInvoices)}</strong></div>
-              <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>المدفوع</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.invoicePaid)}</strong></div>
-              <div className="rounded-lg p-2" style={{ background: supplierStatement.owed ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مستحق علينا</div><strong style={{ color: supplierStatement.owed ? "#A34632" : "#4B6350" }}>{fmt(supplierStatement.owed)}</strong></div>
-              <div className="rounded-lg p-2" style={{ background: supplierStatement.credit ? "var(--good-bg)" : "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>مستحق لنا</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.credit)}</strong></div>
+            <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>الفواتير المرتبطة</div>
+            <div className="flex flex-col gap-2">
+              {linkedInvoices.map((invoice) => (
+                <button key={invoice.id} onClick={() => setExpandedInvoiceId(invoice.id)} className="rounded-lg border p-3 text-right" style={{ borderColor: "var(--card-border)", background: "var(--card-bg)" }}>
+                  <div className="flex items-center justify-between gap-2">
+                    <div className="text-sm font-medium" style={{ color: "var(--text-strong)" }}>#{invoice.invoiceNumber || invoice.id} · {invoice.date}</div>
+                    <Badge bg={getInvoicePaymentStatus(invoice, invoices) === "paid" ? "var(--good-bg)" : "var(--warn-bg)"} fg={getInvoicePaymentStatus(invoice, invoices) === "paid" ? "#4B6350" : "#A34632"}>{getInvoicePaymentStatus(invoice, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(invoice, invoices) === "partial" ? "جزئية" : "غير مسددة"}</Badge>
+                  </div>
+                  <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{invoice.isReturn ? "مرتجع" : invoice.direction === "purchase" ? "شراء" : "بيع"} · {fmt(invoice.amount)}</div>
+                </button>
+              ))}
             </div>
-            <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
-              <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>تسجيل سداد عام</div>
-              <div className="grid grid-cols-2 gap-2"><TextInput type="number" placeholder="مبلغ السداد" value={supplierPaymentAmount} onChange={(e) => setSupplierPaymentAmount(e.target.value)} /><TextInput type="date" value={supplierPaymentDate} onChange={(e) => setSupplierPaymentDate(e.target.value)} /></div>
-              <TextInput placeholder="ملاحظة (اختياري)" value={supplierPaymentNote} onChange={(e) => setSupplierPaymentNote(e.target.value)} />
-              <div className="text-xs" style={{ color: "var(--text-muted)" }}>يوزّع السداد تلقائيًا على أقدم الفواتير غير المسددة، وأي زيادة تصبح رصيدًا لنا عند المورد.</div>
-              <PrimaryButton onClick={addSupplierPayment} full disabled={!supplierPaymentAmount}><Icon name="plus" size={16} /> تسجيل السداد</PrimaryButton>
+          </div>
+        )}
+
+        {expandedInvoice && (
+          <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
+            <div className="flex items-center justify-between gap-2 flex-wrap">
+              <div className="text-sm font-semibold" style={{ color: "var(--text-strong)" }}>تفاصيل الفاتورة #{expandedInvoice.invoiceNumber || expandedInvoice.id}</div>
+              <div className="flex gap-2">
+                <button onClick={() => printInvoiceDocument(expandedInvoice, invoices)} className="text-xs" style={{ color: "var(--accent)" }}>طباعة الفاتورة</button>
+                <button onClick={() => setExpandedInvoiceId(null)} className="text-xs" style={{ color: "var(--text-muted)" }}>إغلاق</button>
+              </div>
             </div>
-            <div className="flex flex-col gap-1">
-              <div className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>الفواتير الآجلة</div>
-              {supplierStatement.rows.length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد فواتير آجلة لهذا المورد.</div> : supplierStatement.rows.map((row) => <div key={row.invoice.id} className="flex items-center justify-between text-xs py-1.5 border-b" style={{ borderColor: "var(--divider)" }}><span>#{row.invoice.invoiceNumber || row.invoice.id} · {row.invoice.date}</span><span style={{ color: row.remaining ? "#A34632" : "#4B6350" }}>{row.remaining ? `متبقي ${fmt(row.remaining)}` : "مسددة"}</span></div>)}
+            <div className="grid sm:grid-cols-2 gap-2 text-xs" style={{ color: "var(--text-body)" }}>
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>التاريخ</div><strong>{expandedInvoice.date}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>الحالة</div><strong>{getInvoicePaymentStatus(expandedInvoice, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(expandedInvoice, invoices) === "partial" ? "جزئية" : "غير مسددة"}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>النوع</div><strong>{expandedInvoice.isReturn ? "مرتجع" : expandedInvoice.direction === "purchase" ? "شراء" : "بيع"}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>المبلغ</div><strong>{fmt(expandedInvoice.amount)}</strong></div>
             </div>
+            <div className="rounded-lg border overflow-hidden" style={{ borderColor: "var(--card-border)" }}>
+              <div className="grid grid-cols-4 text-xs font-medium px-3 py-2" style={{ background: "var(--divider)", color: "var(--text-strong)" }}>
+                <span>الصنف</span><span>الكمية</span><span>السعر</span><span>الإجمالي</span>
+              </div>
+              {(expandedInvoice.items || []).length === 0 ? <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>لا توجد بنود</div> : (expandedInvoice.items || []).map((item, idx) => (
+                <div key={idx} className="grid grid-cols-4 px-3 py-2 text-xs border-t" style={{ borderColor: "var(--divider)", color: "var(--text-body)" }}>
+                  <span>{item.name}</span><span>{item.quantity} {item.unit}</span><span>{fmt(item.unitPrice)}</span><span>{fmt(item.total)}</span>
+                </div>
+              ))}
+            </div>
+            {expandedInvoice.description && <div className="text-xs rounded-lg p-2" style={{ background: "var(--divider)", color: "var(--text-body)" }}>{expandedInvoice.description}</div>}
           </div>
         )}
 
@@ -1741,35 +2134,8 @@ function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, o
           </div>
         )}
 
-        <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
-          <FieldLabel>{label === "موردون" ? "حركة يدوية (غير مرتبطة بفاتورة)" : "تسجيل حركة جديدة"}</FieldLabel>
-          <div className="grid grid-cols-2 gap-2">
-            <Select value={txType} onChange={(e) => setTxType(e.target.value)}><option value="debit">{label === "موردون" ? "زيادة مستحق علينا" : "زيادة دين عليه"}</option><option value="credit">{label === "موردون" ? "رصيد لنا / تسوية" : "تسديد / دفعة منه"}</option></Select>
-            <TextInput type="number" placeholder="المبلغ" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} />
-          </div>
-          <TextInput placeholder="ملاحظة (اختياري)" value={txNote} onChange={(e) => setTxNote(e.target.value)} />
-          <PrimaryButton onClick={addTx} full disabled={!txAmount}><Icon name="plus" size={16} /> تسجيل الحركة</PrimaryButton>
-        </div>
-
-        {transactions.length === 0 ? <EmptyState icon={icon} title="لا توجد حركات مسجّلة بعد" /> : (
-          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
-            {transactions.map((t) => (
-              <div key={t.id} className="flex items-center justify-between py-2.5" style={{ borderColor: "var(--divider)" }}>
-                <div className="flex items-center gap-2">
-                  <Icon name={t.type === "debit" ? "trendUp" : "trendDown"} size={14} color={t.type === "debit" ? "#A34632" : "#4B6350"} />
-                  <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{t.note || (t.type === "debit" ? "زيادة دين" : "تسديد")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{t.date}</div></div>
-                </div>
-                <div className="flex items-center gap-3">
-                  <span className="font-medium" style={{ color: t.type === "debit" ? "#A34632" : "#4B6350" }}>{t.type === "debit" ? "+" : "−"}{fmt(t.amount)}</span>
-                  {pendingTxDelete === t.id ? <ConfirmInline onConfirm={() => removeTx(t.id)} onCancel={() => setPendingTxDelete(null)} /> : <button onClick={() => setPendingTxDelete(t.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}
-                </div>
-              </div>
-            ))}
-          </div>
-        )}
-
         <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
-          {confirmDelete ? <ConfirmInline label="حذف نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف</button>}
+          {!canDelete ? <span className="text-xs" style={{ color: "var(--text-muted)" }}>لا يمكن حذف جهة مرتبطة بفواتير.</span> : confirmDelete ? <ConfirmInline label="حذف نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف</button>}
         </div>
       </div>
     </Modal>
@@ -2041,7 +2407,7 @@ function AddPersonalForm({ onAdd }) {
   const [amount, setAmount] = useState("");
   const [date, setDate] = useState(todayISO());
   const [description, setDescription] = useState("");
-  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: roundMoney(Number(amount)), date, description: description.trim() }); };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>النوع</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}><option value="واصل">واصل (مبلغ استلمته)</option><option value="مصروف">مصروف (صرفته)</option></Select></div>
@@ -2060,9 +2426,12 @@ function DailyExpensesTab({ expenses, treasury, upsert, remove }) {
   const total = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const save = (expense) => {
     const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
-    const transaction = { id: uid(), date: expense.date, direction: "out", amount: Number(expense.amount), expenseId: expense.id, note: expense.category + (expense.description ? " · " + expense.description : "") };
+    const transaction = { id: uid(), date: expense.date, direction: "out", amount: roundMoney(Number(expense.amount)), expenseId: expense.id, note: expense.category + (expense.description ? " · " + expense.description : "") };
+    const retainedTransactions = (currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id);
+    const nextBalance = Number(currentTreasury.openingBalance || 0) + [...retainedTransactions, transaction].reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
+    if (nextBalance < 0) { notify("لا يمكن تسجيل المصروف: رصيد الخزينة لا يكفي."); return; }
     upsert("expenses", expense);
-    upsert("treasury", { ...currentTreasury, transactions: [transaction, ...(currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id)] });
+    upsert("treasury", { ...currentTreasury, transactions: [transaction, ...retainedTransactions] });
     setShowForm(false); setEditing(null);
   };
   const deleteExpense = (expense) => {
@@ -2085,7 +2454,7 @@ function DailyExpenseForm({ initial, onSave }) {
   const [amount, setAmount] = useState(initial?.amount ? String(initial.amount) : "");
   const [date, setDate] = useState(initial?.date || todayISO());
   const [description, setDescription] = useState(initial?.description || "");
-  const submit = () => { if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; } onSave({ id: initial?.id || uid(), category, amount: Number(amount), date, description: description.trim() }); };
+  const submit = () => { if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; } onSave({ id: initial?.id || uid(), category, amount: roundMoney(Number(amount)), date, description: description.trim() }); };
   return <div className="flex flex-col gap-3"><div><FieldLabel>بند المصروف</FieldLabel><Select value={category} onChange={(e) => setCategory(e.target.value)}>{EXPENSE_TYPES.map((item) => <option key={item}>{item}</option>)}</Select></div><div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div><div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div><PrimaryButton onClick={submit} full disabled={!amount}>حفظ المصروف</PrimaryButton></div>;
 }
 
@@ -2094,22 +2463,100 @@ function MillReportsTab({ month, setMonth, invoices, expenses, customers, suppli
   const inMonth = (items) => items.filter((item) => monthKey(item.date) === month);
   const monthInvoices = inMonth(invoices);
   const monthExpenses = inMonth(expenses);
-  const purchases = monthInvoices.filter((item) => item.direction === "purchase").reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const sales = monthInvoices.filter((item) => item.direction === "sale").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const purchases = roundMoney(monthInvoices.filter((item) => item.direction === "purchase").reduce((sum, item) => sum + Number(item.amount || 0) * (item.isReturn ? -1 : 1), 0));
+  const sales = roundMoney(monthInvoices.filter((item) => item.direction === "sale").reduce((sum, item) => sum + Number(item.amount || 0) * (item.isReturn ? -1 : 1), 0));
   const expenseTotal = monthExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const costOfGoodsSold = roundMoney(monthInvoices.filter((item) => item.direction === "sale").reduce((sum, invoice) => sum + (invoice.items || []).reduce((itemSum, line) => itemSum + Number(line.quantity || 0) * Number(line.costUnitPrice || 0) * (invoice.isReturn ? -1 : 1), 0), 0));
+  const netProfit = roundMoney(sales - costOfGoodsSold - expenseTotal);
+  const inventoryValue = roundMoney(inventory.reduce((sum, item) => sum + Number(item.quantity || 0) * Number(item.averageCost || 0), 0));
   const customerDebts = customers.map((item) => ({ ...item, balance: contactBalance(item) })).filter((item) => item.balance > 0).sort((a, b) => b.balance - a.balance);
   const supplierStatements = suppliers.map((item) => ({ ...item, statement: getSupplierStatement(item, invoices) })).filter((item) => item.statement.owed > 0 || item.statement.credit > 0);
   const currentTreasury = treasury?.[0] || { openingBalance: 0, transactions: [] };
   const cashBalance = Number(currentTreasury.openingBalance || 0) + (currentTreasury.transactions || []).reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
   const lowStock = inventory.filter((item) => Number(item.quantity) <= Number(item.minThreshold || 0));
   return <div className="flex flex-col gap-5"><div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص المبيعات والمشتريات والمصروفات والمستحقات والخزينة</p></div><TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" /></div>
-    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3"><StatCard icon="trendUp" label="مبيعات الشهر" value={fmt(sales)} accent="#4B6350" /><StatCard icon="truck" label="مشتريات الشهر" value={fmt(purchases)} accent="#8A6A32" /><StatCard icon="trendDown" label="المصروفات" value={fmt(expenseTotal)} accent="#A34632" /><StatCard icon="wallet" label="رصيد الخزينة" value={fmt(cashBalance)} accent="#6E8F72" /></div>
+    <div className="grid grid-cols-2 lg:grid-cols-3 gap-3"><StatCard icon="trendUp" label="مبيعات الشهر" value={fmt(sales)} accent="#4B6350" /><StatCard icon="truck" label="مشتريات الشهر" value={fmt(purchases)} accent="#8A6A32" /><StatCard icon="package" label="تكلفة البضاعة المباعة" value={fmt(costOfGoodsSold)} accent="#8A6A32" /><StatCard icon="trendDown" label="المصروفات" value={fmt(expenseTotal)} accent="#A34632" /><StatCard icon={netProfit >= 0 ? "trendUp" : "trendDown"} label="صافي الربح التقريبي" value={fmt(netProfit)} accent={netProfit >= 0 ? "#4B6350" : "#A34632"} /><StatCard icon="wallet" label="رصيد الخزينة" value={fmt(cashBalance)} accent="#6E8F72" /></div>
     <div className="grid lg:grid-cols-2 gap-4"><ReportList title="مستحقات العملاء لنا" empty="لا توجد مستحقات على العملاء" items={customerDebts.map((item) => ({ name: item.name, value: fmt(item.balance) }))} /><ReportList title="حسابات الموردين" empty="لا توجد مستحقات للموردين" items={supplierStatements.map((item) => ({ name: item.name, value: item.statement.owed > 0 ? "علينا " + fmt(item.statement.owed) : "لنا " + fmt(item.statement.credit) }))} /></div>
-    <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>ملخص المخزون</h3><div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm"><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>عدد الأصناف</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inventory.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>أصناف منخفضة</span><strong className="block mt-1" style={{ color: lowStock.length ? "#A34632" : "#4B6350" }}>{lowStock.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>حركات الشهر</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inMonth(inventoryMovements).length}</strong></div></div></div>
+    <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>ملخص المخزون</h3><div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm"><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>عدد الأصناف</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inventory.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>قيمة المخزون بالتكلفة</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{fmt(inventoryValue)}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>أصناف منخفضة</span><strong className="block mt-1" style={{ color: lowStock.length ? "#A34632" : "#4B6350" }}>{lowStock.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>حركات الشهر</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inMonth(inventoryMovements).length}</strong></div></div></div>
   </div>;
 }
 
 function ReportList({ title, empty, items }) { return <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>{title}</h3>{items.length === 0 ? <EmptyState icon="users" title={empty} /> : <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>{items.map((item) => <div key={item.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{item.name}</span><strong style={{ color: "#A34632" }}>{item.value}</strong></div>)}</div>}</div>; }
+
+// ---------- Cashflow overview ----------
+function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [] }) {
+  const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+  const treasuryRows = [...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const customerRows = customers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyName: contact.name, partyLabel: "عميل", kindLabel: tx.customerPayment ? "قبض" : tx.type === "debit" ? "زيادة دين" : "تسديد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const supplierRows = suppliers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyName: contact.name, partyLabel: "مورد", kindLabel: tx.supplierPayment ? "صرف" : tx.type === "credit" ? "تسوية" : "زيادة رصيد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const totalIn = treasuryRows.filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const totalOut = treasuryRows.filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
+  const balance = Number(record.openingBalance || 0) + totalIn - totalOut;
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>القبض والصرف</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص الحركة النقدية وحركات العملاء والموردين</p></div>
+      <div className="grid sm:grid-cols-3 gap-3">
+        <StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent={balance >= 0 ? "#4B6350" : "#A34632"} />
+        <StatCard icon="trendUp" label="إجمالي القبض" value={fmt(totalIn)} accent="#6E8F72" />
+        <StatCard icon="trendDown" label="إجمالي الصرف" value={fmt(totalOut)} accent="#A34632" />
+      </div>
+
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+        <div className="mb-3 text-sm font-semibold" style={{ color: "var(--text-body)" }}>سجل الخزينة</div>
+        {treasuryRows.length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : (
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {treasuryRows.map((tx) => (
+              <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
+                <div className="min-w-0">
+                  <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div>
+                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source || "حركة يدوي"}</div>
+                </div>
+                <span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="mb-3 text-sm font-semibold" style={{ color: "var(--text-body)" }}>حركات العملاء</div>
+          {customerRows.length === 0 ? <EmptyState icon="users" title="لا توجد حركات عملاء" /> : (
+            <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+              {customerRows.slice(0, 12).map((tx) => (
+                <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
+                  <div className="min-w-0">
+                    <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.partyName}</div>
+                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"}</div>
+                  </div>
+                  <span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="mb-3 text-sm font-semibold" style={{ color: "var(--text-body)" }}>حركات الموردين</div>
+          {supplierRows.length === 0 ? <EmptyState icon="briefcase" title="لا توجد حركات موردين" /> : (
+            <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+              {supplierRows.slice(0, 12).map((tx) => (
+                <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
+                  <div className="min-w-0">
+                    <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.partyName}</div>
+                    <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"}</div>
+                  </div>
+                  <span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
 
 // ---------- Main treasury ----------
 function TreasuryTab({ treasury, upsert }) {
@@ -2119,33 +2566,62 @@ function TreasuryTab({ treasury, upsert }) {
   const [manualAmount, setManualAmount] = useState("");
   const [manualDate, setManualDate] = useState(todayISO());
   const [manualNote, setManualNote] = useState("");
+  const [editingId, setEditingId] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
   const balance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
-  const saveOpening = () => { if (!nonNegativeNumber(openingBalance)) { notify("أدخل مبلغًا أساسيًا غير سالب."); return; } upsert("treasury", { ...record, openingBalance: Number(openingBalance) }); notify("تم حفظ المبلغ الأساسي للخزينة.", "success"); };
+  const saveOpening = () => {
+    if (!nonNegativeNumber(openingBalance)) { notify("أدخل مبلغًا أساسيًا غير سالب."); return; }
+    const movements = (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+    if (Number(openingBalance) + movements < 0) { notify("لا يمكن حفظ مبلغ أساسي يجعل رصيد الخزينة سالبًا."); return; }
+    upsert("treasury", { ...record, openingBalance: roundMoney(Number(openingBalance)) });
+    notify("تم حفظ المبلغ الأساسي للخزينة.", "success");
+  };
   const addManualTransaction = () => {
     if (!positiveNumber(manualAmount)) { notify("أدخل مبلغًا موجبًا للحركة."); return; }
-    const transaction = { id: uid(), date: manualDate || todayISO(), direction: manualDirection, amount: Number(manualAmount), source: "manual", note: manualNote.trim() || (manualDirection === "in" ? "قبض يدوي" : "صرف يدوي") };
-    upsert("treasury", { ...record, transactions: [transaction, ...(record.transactions || [])] });
-    setManualAmount(""); setManualNote(""); setManualDate(todayISO());
-    notify("تم تسجيل حركة الخزينة.", "success");
+    const transaction = { id: editingId || uid(), date: manualDate || todayISO(), direction: manualDirection, amount: roundMoney(Number(manualAmount)), source: "manual", note: manualNote.trim() || (manualDirection === "in" ? "قبض يدوي" : "صرف يدوي") };
+    const transactions = [transaction, ...(record.transactions || []).filter((tx) => tx.id !== editingId)];
+    const nextBalance = Number(record.openingBalance || 0) + transactions.reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+    if (nextBalance < 0) { notify("لا يمكن تسجيل الحركة: رصيد الخزينة سيصبح سالبًا."); return; }
+    upsert("treasury", { ...record, transactions });
+    setEditingId(null); setManualAmount(""); setManualNote(""); setManualDate(todayISO());
+    notify(editingId ? "تم تعديل حركة الخزينة." : "تم تسجيل حركة الخزينة.", "success");
+  };
+  const editManualTransaction = (transaction) => {
+    setEditingId(transaction.id); setManualDirection(transaction.direction); setManualAmount(String(transaction.amount));
+    setManualDate(transaction.date || todayISO()); setManualNote(transaction.note || "");
+  };
+  const deleteManualTransaction = (id) => {
+    upsert("treasury", { ...record, transactions: (record.transactions || []).filter((tx) => tx.id !== id) });
+    setPendingDelete(null);
   };
   return <div className="flex flex-col gap-5">
     <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>الخزينة الرئيسية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>المبلغ الأساسي وجميع حركات القبض والصرف</p></div>
-    <div className="grid sm:grid-cols-3 gap-3"><StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent="#4B6350" /><StatCard icon="trendUp" label="إجمالي القبض" value={fmt((record.transactions || []).filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#6E8F72" /><StatCard icon="trendDown" label="إجمالي الصرف" value={fmt((record.transactions || []).filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#A34632" /></div>
+    <div className="grid sm:grid-cols-3 gap-3"><StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent={balance >= 0 ? "#4B6350" : "#A34632"} /> <StatCard icon="trendUp" label="إجمالي القبض" value={fmt((record.transactions || []).filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#6E8F72" /><StatCard icon="trendDown" label="إجمالي الصرف" value={fmt((record.transactions || []).filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#A34632" /></div>
     <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>المبلغ الأساسي للخزينة</FieldLabel><div className="flex gap-2"><TextInput type="number" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} /><PrimaryButton onClick={saveOpening}>حفظ المبلغ الأساسي</PrimaryButton></div></div>
-    <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>إضافة حركة يدوية</FieldLabel><div className="grid sm:grid-cols-4 gap-2"><Select value={manualDirection} onChange={(e) => setManualDirection(e.target.value)}><option value="in">قبض</option><option value="out">صرف</option></Select><TextInput type="number" placeholder="المبلغ" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} /><TextInput type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} /><TextInput placeholder="البيان" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div><PrimaryButton onClick={addManualTransaction} disabled={!manualAmount}><Icon name="plus" size={15} /> تسجيل الحركة</PrimaryButton></div>
-    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date}</div></div><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span></div>)}</div>}
+    <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>{editingId ? "تعديل حركة يدوية" : "إضافة حركة يدوية"}</FieldLabel><div className="grid sm:grid-cols-4 gap-2"><Select value={manualDirection} onChange={(e) => setManualDirection(e.target.value)}><option value="in">قبض</option><option value="out">صرف</option></Select><TextInput type="number" placeholder="المبلغ" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} /><TextInput type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} /><TextInput placeholder="البيان" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div><div className="flex gap-2"><PrimaryButton onClick={addManualTransaction} disabled={!manualAmount}><Icon name="plus" size={15} /> {editingId ? "حفظ التعديل" : "تسجيل الحركة"}</PrimaryButton>{editingId && <GhostButton onClick={() => { setEditingId(null); setManualAmount(""); setManualNote(""); }}>إلغاء</GhostButton>}</div></div>
+    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b gap-3" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{tx.source === "manual" && (pendingDelete === tx.id ? <ConfirmInline onConfirm={() => deleteManualTransaction(tx.id)} onCancel={() => setPendingDelete(null)} /> : <><button onClick={() => editManualTransaction(tx)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button></>)}</div></div>)}</div>}
   </div>;
 }
 
 // ---------- Inventory ----------
-function InventoryTab({ inventory, inventoryMovements, upsert, remove }) {
+function InventoryTab({ inventory, inventoryMovements, invoices, upsert, remove }) {
   const [showAdd, setShowAdd] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
   const adjust = (item, delta) => {
     const current = Number(item.quantity);
     if (!Number.isFinite(current)) return;
+    if (current + delta < 0) { notify(`لا يمكن خفض مخزون «${item.name}» إلى أقل من صفر.`); return; }
     upsert("inventory", { ...item, quantity: Math.max(0, current + delta) });
     upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "manual", note: "تعديل يدوي" });
+  };
+  const deleteItem = (item) => {
+    if (invoices.some((invoice) => (invoice.items || []).some((line) => line.inventoryId === item.id || (!line.inventoryId && normalizeName(line.name) === normalizeName(item.name))))) {
+      notify(`لا يمكن حذف «${item.name}» لارتباطه بفواتير.`);
+      setPendingDelete(null);
+      return;
+    }
+    remove("inventory", item.id);
+    setPendingDelete(null);
   };
   return (
     <div className="flex flex-col gap-5">
@@ -2161,7 +2637,7 @@ function InventoryTab({ inventory, inventoryMovements, upsert, remove }) {
               <div key={i.id} className="rounded-2xl border p-4 flex flex-col gap-3" style={{ borderColor: low ? "var(--warn-border)" : "var(--card-border)", background: low ? "var(--warn-bg)" : "var(--card-bg)" }}>
                 <div className="flex items-start justify-between">
                   <div><div className="font-medium" style={{ color: "var(--text-strong)" }}>{i.name}</div>{low && <div className="text-xs flex items-center gap-1 mt-0.5" style={{ color: "#A34632" }}><Icon name="alert" size={11} /> منخفض</div>}</div>
-                  {pendingDelete === i.id ? <ConfirmInline onConfirm={() => { remove("inventory", i.id); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(i.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+                  {pendingDelete === i.id ? <ConfirmInline onConfirm={() => deleteItem(i)} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(i.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
                 </div>
                 <div className="flex items-center justify-between">
                   <div className="flex items-center gap-2">
@@ -2171,7 +2647,7 @@ function InventoryTab({ inventory, inventoryMovements, upsert, remove }) {
                   </div>
                   <span className="text-xs" style={{ color: "var(--text-muted)" }}>{i.unit}</span>
                 </div>
-                <div className="text-xs" style={{ color: "var(--text-muted)" }}>الحد الأدنى: {fmt(i.minThreshold)} {i.unit}</div>
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>التكلفة: {fmt(i.averageCost || 0)} للوحدة · الحد الأدنى: {fmt(i.minThreshold)} {i.unit}</div>
               </div>
             );
           })}
@@ -2187,15 +2663,17 @@ function AddInventoryForm({ onAdd, existing = [] }) {
   const [quantity, setQuantity] = useState("");
   const [unit, setUnit] = useState("كيس");
   const [minThreshold, setMinThreshold] = useState("");
+  const [averageCost, setAverageCost] = useState("0");
   const submit = () => {
-    if (!name.trim() || !nonNegativeNumber(quantity || 0) || !nonNegativeNumber(minThreshold || 0)) { notify("أدخل كميات غير سالبة."); return; }
+    if (!name.trim() || !nonNegativeNumber(quantity || 0) || !nonNegativeNumber(minThreshold || 0) || !nonNegativeNumber(averageCost || 0)) { notify("أدخل كميات وتكلفة غير سالبة."); return; }
     if (hasDuplicateName(existing, name)) { notify("هذه المادة موجودة مسبقًا."); return; }
-    onAdd({ id: uid(), name: name.trim(), quantity: Number(quantity || 0), unit, minThreshold: Number(minThreshold || 0) });
+    onAdd({ id: uid(), name: name.trim(), quantity: Number(quantity || 0), unit, minThreshold: Number(minThreshold || 0), averageCost: roundMoney(Number(averageCost || 0)) });
   };
   return (
     <div className="flex flex-col gap-3">
       <div><FieldLabel>اسم المادة</FieldLabel><TextInput list="item-suggestions-2" value={name} onChange={(e) => setName(e.target.value)} /><datalist id="item-suggestions-2">{ITEM_SUGGESTIONS.map((s) => <option key={s} value={s} />)}</datalist></div>
-      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>الكمية الحالية</FieldLabel><TextInput type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div><div><FieldLabel>الوحدة</FieldLabel><Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>لتر</option><option>م</option><option>قطعة</option></Select></div></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>الكمية الحالية</FieldLabel><TextInput type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div><div><FieldLabel>الوحدة</FieldLabel><Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>كجم</option><option>طن</option><option>لتر</option><option>م</option><option>قطعة</option></Select></div></div>
+      <div><FieldLabel>تكلفة الوحدة</FieldLabel><TextInput type="number" min="0" value={averageCost} onChange={(e) => setAverageCost(e.target.value)} /></div>
       <div><FieldLabel>حد التنبيه عند النقص</FieldLabel><TextInput type="number" value={minThreshold} onChange={(e) => setMinThreshold(e.target.value)} /></div>
       <PrimaryButton onClick={submit} full disabled={!name.trim()}><Icon name="plus" size={16} /> إضافة إلى المخزون</PrimaryButton>
     </div>
@@ -2207,7 +2685,7 @@ function App() {
   if (!hasSupabaseConfig) return <><ToastHost /><FactoryApp /></>;
   if (auth.loading) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center text-sm" style={{ background: "var(--bg)", color: "var(--text-muted)", fontFamily: "'Cairo', sans-serif" }}>جارٍ التحقق من الحساب...</div></>;
   if (!auth.session) return <><ToastHost /><AuthScreen auth={auth} /></>;
-  if (auth.error || !auth.organization) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center p-4 text-sm" style={{ background: "var(--bg)", color: "#A34632", fontFamily: "'Cairo', sans-serif" }}>تعذر تجهيز مساحة الشركة: {auth.error || "لم يتم العثور على المنظمة"}</div></>;
+  if (auth.error || !auth.organization) return <><ToastHost /><div dir="rtl" className="min-h-screen flex flex-col items-center justify-center gap-4 p-4 text-sm" style={{ background: "var(--bg)", color: "#A34632", fontFamily: "'Cairo', sans-serif" }}><div>تعذر تجهيز مساحة الشركة: {auth.error || "لم يتم العثور على المنظمة"}</div><button onClick={auth.signOut} className="rounded-lg border px-4 py-2" style={{ color: "var(--text-body)", borderColor: "var(--card-border)", background: "var(--card-bg)" }}>تسجيل الخروج</button></div></>;
   return <><ToastHost /><FactoryApp organizationId={auth.organization.organization_id || auth.organization.id} organizationCode={auth.organization.invite_code} email={auth.session.user.email} onSignOut={auth.signOut} /></>;
 }
 
