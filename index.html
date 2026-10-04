@@ -111,7 +111,7 @@ const getInvoiceInitialPaidAmount = (invoice, customers = [], suppliers = []) =>
 const getInvoiceLaterPaymentsAmount = (invoice, customers = [], suppliers = []) => {
   const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
   const supplier = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId));
-  const customerTotal = (customer?.transactions || []).filter((transaction) => transaction.customerPayment && transaction.invoiceId === invoice.id).reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+  const customerTotal = (customer?.transactions || []).filter((transaction) => transaction.customerPayment).reduce((sum, transaction) => sum + (Array.isArray(transaction.allocations) && transaction.allocations.length ? transaction.allocations.filter((allocation) => allocation.invoiceId === invoice.id).reduce((allocationSum, allocation) => allocationSum + Number(allocation.amount || 0), 0) : transaction.invoiceId === invoice.id ? Number(transaction.amount || 0) : 0), 0);
   const supplierTotal = (supplier?.transactions || []).filter((transaction) => transaction.supplierPayment).reduce((sum, transaction) => sum + (transaction.allocations || []).filter((allocation) => allocation.invoiceId === invoice.id).reduce((allocationSum, allocation) => allocationSum + Number(allocation.amount || 0), 0), 0);
   return roundMoney(customerTotal + supplierTotal);
 };
@@ -311,6 +311,19 @@ const allocateSupplierPayment = (supplier, invoices, amount) => {
     return allocated > 0 ? { invoiceId: row.invoice.id, amount: allocated } : null;
   }).filter(Boolean);
 };
+const getCustomerDebtInvoices = (customer, invoices = []) => invoices
+  .filter((invoice) => (invoice.direction || (invoice.type === "شراء" ? "purchase" : "sale")) === "sale" && (invoice.customerId || invoice.contactId) === customer.id && !invoice.isReturn)
+  .map((invoice) => ({ invoice, remaining: getInvoiceOutstanding(invoice, invoices) }))
+  .filter((row) => row.remaining > 0)
+  .sort((a, b) => (a.invoice.date || "").localeCompare(b.invoice.date || "") || String(a.invoice.id).localeCompare(String(b.invoice.id)));
+const allocateCustomerPayment = (customer, invoices, amount) => {
+  let remaining = Number(amount || 0);
+  return getCustomerDebtInvoices(customer, invoices).map(({ invoice, remaining: due }) => {
+    const allocated = Math.min(due, remaining);
+    remaining -= allocated;
+    return allocated > 0 ? { invoiceId: invoice.id, amount: roundMoney(allocated) } : null;
+  }).filter(Boolean);
+};
 
 const PRODUCT_TYPES = ["قهوة", "تعبئة", "أخرى"];
 const STATUSES = ["جديد", "قيد التنفيذ", "مكتمل"];
@@ -500,6 +513,27 @@ function useFactoryData(organizationId) {
       return true;
     }
   };
+  const upsertBatch = async (records) => {
+    if (!Array.isArray(records) || records.length === 0) return true;
+    if (supabaseClient && organizationId) {
+      const { error: batchError } = await supabaseClient.rpc("upsert_app_records_batch", {
+        p_organization_id: organizationId,
+        p_records: records.map(({ collection, record }) => ({ collection, id: record.id, payload: record })),
+      });
+      if (batchError) { setError(batchError.message); return false; }
+    }
+    setData((prev) => {
+      const next = { ...prev };
+      records.forEach(({ collection, record }) => {
+        const list = next[collection] || [];
+        const index = list.findIndex((item) => item.id === record.id);
+        next[collection] = index < 0 ? [record, ...list] : list.map((item) => item.id === record.id ? record : item);
+      });
+      if (!supabaseClient || !organizationId) records.forEach(({ collection }) => saveLocal(collection, next[collection] || []));
+      return next;
+    });
+    return true;
+  };
   const remove = async (name, id) => {
     if (supabaseClient && organizationId) {
       const { error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id);
@@ -529,7 +563,7 @@ function useFactoryData(organizationId) {
     return { added, updated };
   };
 
-  return { ready, usingLocal, data, upsert, remove, downloadsNs, error, reload, importBackup };
+  return { ready, usingLocal, data, upsert, upsertBatch, remove, downloadsNs, error, reload, importBackup };
 }
 
 async function exportBackup(downloadsNs, data) {
@@ -667,7 +701,7 @@ function AuthScreen({ auth }) {
 
 // ---------- App ----------
 function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
-  const { ready, usingLocal, data, upsert, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
+  const { ready, usingLocal, data, upsert, upsertBatch, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
   const { invoices, inventory, inventoryMovements, customers, suppliers, workers, attendance, treasury, expenses } = data;
 
   const [tab, setTab] = useState("dashboard");
@@ -785,7 +819,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         )}
         {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
-        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
         {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
@@ -1031,7 +1065,7 @@ function printProjectInvoice(project, income = []) {
   if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
   const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><title>فاتورة - ${escapeHtml(project.customerName)}</title><style>
     @page{size:A4 portrait;margin:0}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{margin:0;font-family:Arial,Tahoma,sans-serif;color:#1f1b16;font-size:13px;background:#fff}.page{width:210mm;min-height:297mm;padding:0 14mm 18mm;position:relative}.top{height:9mm;background:#7a4423;margin:0 -14mm 8mm}.head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #7a4423;padding-bottom:12px}.brand{display:flex;gap:12px;align-items:center}.logo{width:54px;height:54px;border-radius:14px;background:#7a4423;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}.co-name{font-size:22px;font-weight:800;color:#7a4423}.co-sub{font-size:12px;font-weight:600;color:#6b645b}.addr{font-size:11px;color:#6b645b;margin-top:3px}.meta{border:1px solid #e3dbd0;border-radius:10px;overflow:hidden;min-width:190px}.meta div{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;font-size:12px}.meta div+div{border-top:1px solid #e3dbd0}.meta b{color:#7a4423}.title{text-align:center;margin:14px 0;color:#7a4423;font-size:17px;font-weight:800}.title span{display:inline-block;padding:4px 28px;border:1.5px solid #7a4423;border-radius:30px;background:#f5ece3}.info{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.cell{border:1px solid #e3dbd0;border-radius:10px;padding:8px 12px;background:#fcfaf7}.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}.row+.row{border-top:1px dashed #e3dbd0}.k{color:#6b645b;font-size:11.5px}.v{font-weight:700;text-align:left}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e3dbd0;border-radius:10px;overflow:hidden}th{background:#7a4423;color:#fff;padding:9px 6px;font-size:12px}td{padding:8px 6px;text-align:center;border-top:1px solid #e3dbd0}tbody tr:nth-child(even) td{background:#fbf8f4}.item-name{text-align:right;padding-right:12px;font-weight:600}.num{font-weight:800}.empty-row{color:#6b645b;padding:22px}th:nth-child(1){width:8%}th:nth-child(2){width:40%}th:nth-child(3),th:nth-child(4){width:16%}th:nth-child(5){width:20%}.bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}.words,.totals{border:1px solid #e3dbd0;border-radius:10px;padding:10px 12px;line-height:1.9}.words b{color:#7a4423}.totals{padding:0;overflow:hidden}.totals .r{display:flex;justify-content:space-between;padding:7px 12px}.totals .r+.r{border-top:1px solid #e3dbd0}.totals .big{background:#7a4423;color:#fff;font-size:16px;font-weight:800}.totals .due{background:#f5ece3;color:#7a4423;font-weight:800}.sign{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;text-align:center;font-size:12px;color:#6b645b}.sign div>div{margin-top:36px;border-top:1px solid #1f1b16;padding-top:5px}.foot{position:absolute;bottom:0;right:0;left:0;text-align:center;padding:6px;background:#f5ece3;color:#7a4423;font-weight:700;font-size:11.5px;border-top:2px solid #7a4423}
-  </style></head><body><main class="page"><div class="top"></div><header class="head"><div class="brand"><div class="logo">ش</div><div><div class="co-name">شركة الشرق الكبرى</div><div class="co-sub">للطلاء الخارجي والعوازل</div><div class="addr">ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</div></div></div><div class="meta"><div><span>رقم الفاتورة</span><b>${invoiceNumber}</b></div><div><span>تاريخ الإصدار</span><b>${todayISO()}</b></div><div><span>تاريخ المشروع</span><b>${escapeHtml(project.dateCreated || "—")}</b></div></div></header><div class="title"><span>فاتورة القياس النهائي</span></div><section class="info"><div class="cell"><div class="row"><span class="k">الزبون</span><span class="v">${escapeHtml(project.customerName || "غير محدد")}</span></div><div class="row"><span class="k">الهاتف</span><span class="v" dir="ltr">${escapeHtml(project.phone || "غير محدد")}</span></div></div><div class="cell"><div class="row"><span class="k">العنوان</span><span class="v">${escapeHtml(project.location || "غير محدد")}</span></div><div class="row"><span class="k">نوع المنتج</span><span class="v">${escapeHtml(project.productType || "غير محدد")}</span></div></div></section><table><thead><tr><th>#</th><th>البند</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table><section class="bottom"><div class="words"><div><b>الإجمالي كتابةً:</b> ${escapeHtml(numberToArabicWords(Math.max(0, sm.cost - sm.waived)))} دينار ليبي فقط لا غير</div><div><b>الحالة:</b> ${statusText} — ${statusValue}</div>${sm.waived > 0 ? `<div><b>المبلغ المتغاضى عنه:</b> ${fmt(sm.waived)}</div>` : ""}<div><b>ملاحظات:</b> ${escapeHtml(project.notes || "لا توجد ملاحظات")}</div></div><div class="totals"><div class="r big"><span>الإجمالي</span><span>${fmt(Math.max(0, sm.cost - sm.waived))}</span></div><div class="r"><span>الواصل</span><span>${fmt(sm.paid)}</span></div><div class="r due"><span>${statusText}</span><span>${statusValue}</span></div></div></section><div class="sign"><div>إعداد<div>التوقيع</div></div><div>اعتماد<div>التوقيع</div></div></div></main><footer class="foot">شركة الشرق الكبرى — شكرًا لتعاملكم معنا</footer></body></html>`;
+  </style></head><body><main class="page"><div class="top"></div><header class="head"><div class="brand"><div class="logo">ق</div><div><div class="co-name">شركة القصر</div><div class="co-sub">إدارة المحاسبة</div><div class="addr">فاتورة مشروع — شركة القصر</div></div></div><div class="meta"><div><span>رقم الفاتورة</span><b>${invoiceNumber}</b></div><div><span>تاريخ الإصدار</span><b>${todayISO()}</b></div><div><span>تاريخ المشروع</span><b>${escapeHtml(project.dateCreated || "—")}</b></div></div></header><div class="title"><span>فاتورة القياس النهائي</span></div><section class="info"><div class="cell"><div class="row"><span class="k">الزبون</span><span class="v">${escapeHtml(project.customerName || "غير محدد")}</span></div><div class="row"><span class="k">الهاتف</span><span class="v" dir="ltr">${escapeHtml(project.phone || "غير محدد")}</span></div></div><div class="cell"><div class="row"><span class="k">العنوان</span><span class="v">${escapeHtml(project.location || "غير محدد")}</span></div><div class="row"><span class="k">نوع المنتج</span><span class="v">${escapeHtml(project.productType || "غير محدد")}</span></div></div></section><table><thead><tr><th>#</th><th>البند</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table><section class="bottom"><div class="words"><div><b>الإجمالي كتابةً:</b> ${escapeHtml(numberToArabicWords(Math.max(0, sm.cost - sm.waived)))} دينار ليبي فقط لا غير</div><div><b>الحالة:</b> ${statusText} — ${statusValue}</div>${sm.waived > 0 ? `<div><b>المبلغ المتغاضى عنه:</b> ${fmt(sm.waived)}</div>` : ""}<div><b>ملاحظات:</b> ${escapeHtml(project.notes || "لا توجد ملاحظات")}</div></div><div class="totals"><div class="r big"><span>الإجمالي</span><span>${fmt(Math.max(0, sm.cost - sm.waived))}</span></div><div class="r"><span>الواصل</span><span>${fmt(sm.paid)}</span></div><div class="r due"><span>${statusText}</span><span>${statusValue}</span></div></div></section><div class="sign"><div>إعداد<div>التوقيع</div></div><div>اعتماد<div>التوقيع</div></div></div></main><footer class="foot">شركة القصر — شكرًا لتعاملكم معنا</footer></body></html>`;
   printWindow.document.open(); printWindow.document.write(printHtml); printWindow.document.close();
   let printed = false;
   const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
@@ -1319,7 +1353,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
     }
     const linkedCustomerPayments = customers.find((item) => item.id === (invoice.customerId || invoice.contactId))?.transactions || [];
     const linkedSupplierPayments = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId))?.transactions || [];
-    if (linkedCustomerPayments.some((transaction) => transaction.customerPayment && transaction.invoiceId === invoice.id && transaction.id !== "invoice-payment-" + invoice.id)
+    if (linkedCustomerPayments.some((transaction) => transaction.customerPayment && transaction.id !== "invoice-payment-" + invoice.id && (transaction.invoiceId === invoice.id || (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id)))
       || linkedSupplierPayments.some((transaction) => transaction.supplierPayment && transaction.id !== "invoice-payment-" + invoice.id && (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id))) {
       notify("لا يمكن حذف الفاتورة قبل حذف دفعاتها المرتبطة.");
       return false;
@@ -1410,7 +1444,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
         const customer = customers.find((item) => item.id === customerId);
         if (!customer) return;
         const isLegacyInvoiceMovement = (transaction) => previous && transaction.date === previous.date && Number(transaction.amount) === Number(previous.amount) && String(transaction.note || "").includes("فاتورة بيع");
-        const recordedPaidAmount = (customer.transactions || []).filter((transaction) => transaction.invoiceId === invoice.id && transaction.customerPayment).reduce((sum, transaction) => sum + Number(transaction.amount || 0), 0);
+        const recordedPaidAmount = (customer.transactions || []).filter((transaction) => transaction.customerPayment).reduce((sum, transaction) => sum + (Array.isArray(transaction.allocations) && transaction.allocations.length ? transaction.allocations.filter((allocation) => allocation.invoiceId === invoice.id).reduce((allocationSum, allocation) => allocationSum + Number(allocation.amount || 0), 0) : transaction.invoiceId === invoice.id ? Number(transaction.amount || 0) : 0), 0);
         const unrecordedPayment = Math.max(0, paidAmount - recordedPaidAmount);
         const remaining = (customer.transactions || []).filter((transaction) => transaction.id !== invoice.contactTransactionId && !isLegacyInvoiceMovement(transaction) && !(transaction.invoiceId === invoice.id && (transaction.invoiceDebt || transaction.invoiceReturn)));
         const invoiceTransactions = customerId === invoice.contactId
@@ -1507,8 +1541,8 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
           </div>
         </div>
       )}
-      {showAdd && <Modal title={creatingReturn ? `مرتجع ${mode === "purchase" ? "شراء" : "بيع"}` : `فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} startAsReturn={creatingReturn} onAdd={(inv) => { if (saveInvoice(inv)) setShowAdd(false); }} /></Modal>}
-      {editingInvoice && <Modal title={editingInvoice.isReturn ? "تعديل المرتجع" : "تعديل الفاتورة"} onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
+      {showAdd && <Modal title={creatingReturn ? `مرتجع ${mode === "purchase" ? "شراء" : "بيع"}` : `فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} customers={customers} suppliers={suppliers} upsert={upsert} startAsReturn={creatingReturn} onAdd={(inv) => { if (saveInvoice(inv)) setShowAdd(false); }} /></Modal>}
+      {editingInvoice && <Modal title={editingInvoice.isReturn ? "تعديل المرتجع" : "تعديل الفاتورة"} onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} customers={customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
     </div>
   );
 }
@@ -1533,7 +1567,7 @@ function InvoiceContactPicker({ mode, contacts, contactId, contactName, onSelect
   </div>;
 }
 
-function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, suppliers, upsert, initialInvoice = null, startAsReturn = false }) {
+function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, customers = [], suppliers = [], upsert, initialInvoice = null, startAsReturn = false }) {
   const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoiceNumber || "");
   const [contactId, setContactId] = useState(initialInvoice?.contactId || initialInvoice?.supplierId || "");
   const [contactName, setContactName] = useState(initialInvoice?.contactName || initialInvoice?.supplierName || initialInvoice?.customerName || "");
@@ -1542,7 +1576,7 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, suppl
   const [description, setDescription] = useState(initialInvoice?.description || "");
   const [paymentStatus, setPaymentStatus] = useState(initialInvoice ? initialInvoice.paymentStatus || (initialInvoice.debtTransactionId ? "unpaid" : "paid") : "unpaid");
   const [discount, setDiscount] = useState(String(initialInvoice?.discount || 0));
-  const [paidAmount, setPaidAmount] = useState(String(initialInvoice ? getInvoiceInitialPaidAmount(initialInvoice) : 0));
+  const [paidAmount, setPaidAmount] = useState(String(initialInvoice ? getInvoiceInitialPaidAmount(initialInvoice, customers, suppliers) : 0));
   const [isReturn, setIsReturn] = useState(Boolean(initialInvoice?.isReturn || startAsReturn));
   const [returnForInvoiceId, setReturnForInvoiceId] = useState(initialInvoice?.returnForInvoiceId || "");
   const [items, setItems] = useState(initialInvoice?.items?.length ? initialInvoice.items : [{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
@@ -1912,20 +1946,26 @@ function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, 
   const removeTx = (id) => {
     const transaction = transactions.find((item) => item.id === id);
     if (!transaction || transaction.invoiceDebt) { setPendingTxDelete(null); return; }
-    update({ transactions: transactions.filter((t) => t.id !== id) });
+    const remainingTransactions = transactions.filter((t) => t.id !== id);
+    update({ transactions: remainingTransactions });
     if (transaction.customerPayment || transaction.supplierPayment) {
       const record = treasury?.[0];
       if (record) onTreasurySave({ ...record, transactions: (record.transactions || []).filter((item) => item.paymentId !== id && item.id !== id) });
-      const allocations = transaction.supplierPayment ? transaction.allocations || [] : transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : [];
-      allocations.forEach((allocation) => {
-        const invoice = invoices.find((item) => item.id === allocation.invoiceId);
+      const allocations = Array.isArray(transaction.allocations) && transaction.allocations.length ? transaction.allocations : (transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : []);
+      const allocationTotals = new Map();
+      allocations.forEach((allocation) => allocationTotals.set(allocation.invoiceId, (allocationTotals.get(allocation.invoiceId) || 0) + Number(allocation.amount || 0)));
+      allocationTotals.forEach((allocatedAmount, invoiceId) => {
+        const invoice = invoices.find((item) => item.id === invoiceId);
         if (!invoice) return;
-        const paid = getInvoicePaidAmount(invoice);
-        const paidAmount = roundMoney(Math.max(0, paid - Number(allocation.amount || 0)));
+        const paidAmount = roundMoney(Math.max(0, getInvoicePaidAmount(invoice) - allocatedAmount));
+        const initialPaidAmount = getInvoiceInitialPaidAmount(invoice, transaction.customerPayment ? [local] : [], transaction.supplierPayment ? [local] : []);
+        const adjustedInitialPaidAmount = transaction.id === "invoice-payment-" + invoice.id
+          ? roundMoney(Math.max(0, initialPaidAmount - allocatedAmount))
+          : initialPaidAmount;
         onInvoiceSave({
           ...invoice,
           paidAmount,
-          initialPaidAmount: invoice.initialPaidAmount ?? Math.max(0, Number(invoice.paidAmount || 0) - getInvoiceLaterPaymentsAmount(invoice, customers, suppliers)),
+          initialPaidAmount: adjustedInitialPaidAmount,
           paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices),
         });
       });
@@ -2483,8 +2523,90 @@ function MillReportsTab({ month, setMonth, invoices, expenses, customers, suppli
 
 function ReportList({ title, empty, items }) { return <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>{title}</h3>{items.length === 0 ? <EmptyState icon="users" title={empty} /> : <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>{items.map((item) => <div key={item.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{item.name}</span><strong style={{ color: "#A34632" }}>{item.value}</strong></div>)}</div>}</div>; }
 
+function CashflowPaymentForm({ customers, suppliers, invoices, direction, record, upsertBatch, onClose }) {
+  const parties = direction === "in" ? customers : suppliers;
+  const [partyId, setPartyId] = useState("");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const party = parties.find((item) => item.id === partyId);
+  const cashBalance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+  const submit = async () => {
+    const value = roundMoney(Number(amount));
+    if (!party) { notify(`اختر ${direction === "in" ? "العميل" : "المورد"} أولًا.`); return; }
+    if (!positiveNumber(value)) { notify("أدخل مبلغًا موجبًا صحيحًا."); return; }
+    if (!date) { notify("أدخل تاريخ الحركة."); return; }
+    if (direction === "out" && value > cashBalance) { notify("لا يمكن صرف مبلغ أكبر من رصيد الخزينة."); return; }
+
+    const allocations = direction === "in" ? allocateCustomerPayment(party, invoices, value) : allocateSupplierPayment(party, invoices, value);
+    const paymentId = uid();
+    const paymentNote = note.trim() || (direction === "in" ? "قبض من العميل" : "صرف للمورد");
+    const payment = {
+      id: paymentId, date, type: "credit", amount: value, note: paymentNote,
+      ...(direction === "in" ? { customerPayment: true } : { supplierPayment: true }),
+      allocations,
+      ...(allocations.length === 1 ? { invoiceId: allocations[0].invoiceId } : {}),
+    };
+    const updatedParty = { ...party, transactions: [payment, ...(party.transactions || [])] };
+    const cashTransaction = {
+      id: uid(), paymentId, date, direction, amount: value, source: "contact-payment",
+      partyId: party.id, partyType: direction === "in" ? "customer" : "supplier", partyName: party.name,
+      note: `${direction === "in" ? "قبض من العميل" : "صرف للمورد"} ${party.name} · ${paymentNote}`,
+    };
+    const updatedTreasury = { ...record, id: record.id || "main", transactions: [cashTransaction, ...(record.transactions || [])] };
+    const changedInvoices = new Map();
+    allocations.forEach((allocation) => {
+      const invoice = invoices.find((item) => item.id === allocation.invoiceId);
+      if (!invoice) return;
+      const paidAmount = roundMoney(Math.min(Number(invoice.amount || 0), getInvoicePaidAmount(invoice) + Number(allocation.amount || 0)));
+      changedInvoices.set(invoice.id, {
+        ...invoice, paidAmount,
+        initialPaidAmount: getInvoiceInitialPaidAmount(invoice, customers, suppliers),
+        paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices),
+      });
+    });
+
+    setSaving(true);
+    try {
+      const records = [
+        { collection: direction === "in" ? "customers" : "suppliers", record: updatedParty },
+        { collection: "treasury", record: updatedTreasury },
+        ...Array.from(changedInvoices.values()).map((invoice) => ({ collection: "invoices", record: invoice })),
+      ];
+      const saved = await upsertBatch(records);
+      if (!saved) { notify("تعذر حفظ السند كاملًا. لم تُحفظ أي من قيوده؛ راجع إعداد قاعدة البيانات وحاول مجددًا."); return; }
+      notify(direction === "in" ? "تم تسجيل سند القبض وتحديث حساب العميل والخزينة." : "تم تسجيل سند الصرف وتحديث حساب المورد والخزينة.", "success");
+      onClose();
+    } catch (error) {
+      console.error("Payment posting failed", error);
+      notify("تعذر حفظ السند: " + (error?.message || "خطأ غير معروف"));
+    } finally {
+      setSaving(false);
+    }
+  };
+  const allocationsPreview = party && positiveNumber(amount)
+    ? direction === "in" ? allocateCustomerPayment(party, invoices, Number(amount)) : allocateSupplierPayment(party, invoices, Number(amount))
+    : [];
+  return <div className="flex flex-col gap-3">
+    <div><FieldLabel>{direction === "in" ? "العميل" : "المورد"}</FieldLabel><SearchablePicker items={parties} value={partyId} onSelect={setPartyId} placeholder={`اختر ${direction === "in" ? "العميل" : "المورد"} بالاسم أو الهاتف...`} getLabel={(item) => item.name + (item.phone ? " — " + item.phone : "")} getSearchText={(item) => [item.name, item.phone].filter(Boolean).join(" ")} /></div>
+    <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(event) => setDate(event.target.value)} /></div></div>
+    <div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={note} onChange={(event) => setNote(event.target.value)} placeholder={direction === "in" ? "مثال: سداد دفعة الفاتورة" : "مثال: دفعة للمورد"} /></div>
+    <div className="rounded-lg p-3 text-xs leading-6" style={{ background: "var(--divider)", color: "var(--text-body)" }}>
+      {direction === "out" && <div><strong>رصيد الخزينة المتاح:</strong> {fmt(cashBalance)}</div>}
+      <div>سيتم توزيع المبلغ تلقائيًا على أقدم الفواتير المستحقة{direction === "in" ? " للعميل" : " للمورد"}. والفائض يسوّي أي رصيد يدوي قائم أولًا، ثم يظهر رصيدًا دائنًا للجهة.</div>
+      {party && <div><strong>الفواتير التي سيُخصّص لها المبلغ:</strong> {allocationsPreview.length ? allocationsPreview.map((allocation) => {
+        const invoice = invoices.find((item) => item.id === allocation.invoiceId);
+        return `#${invoice?.invoiceNumber || invoice?.id}: ${fmt(allocation.amount)}`;
+      }).join(" · ") : "لا توجد فواتير مستحقة؛ سيُسجّل المبلغ في حساب الجهة."}</div>}
+    </div>
+    <div className="flex gap-2"><PrimaryButton onClick={submit} disabled={saving || !partyId || !positiveNumber(amount)}><Icon name={direction === "in" ? "plus" : "minus"} size={15} /> {saving ? "جارٍ الحفظ..." : direction === "in" ? "تسجيل سند القبض" : "تسجيل سند الصرف"}</PrimaryButton><GhostButton onClick={onClose}>إلغاء</GhostButton></div>
+  </div>;
+}
+
 // ---------- Cashflow overview ----------
-function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [] }) {
+function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [], upsertBatch }) {
+  const [paymentDirection, setPaymentDirection] = useState(null);
   const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
   const treasuryRows = [...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const customerRows = customers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyName: contact.name, partyLabel: "عميل", kindLabel: tx.customerPayment ? "قبض" : tx.type === "debit" ? "زيادة دين" : "تسديد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -2495,7 +2617,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
 
   return (
     <div className="flex flex-col gap-5">
-      <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>القبض والصرف</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص الحركة النقدية وحركات العملاء والموردين</p></div>
+      <div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>القبض والصرف</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص الحركة النقدية وحركات العملاء والموردين</p></div><div className="flex gap-2"><PrimaryButton onClick={() => setPaymentDirection("in")}><Icon name="plus" size={15} /> إضافة قبض</PrimaryButton><GhostButton onClick={() => setPaymentDirection("out")}><Icon name="minus" size={15} /> إضافة صرف</GhostButton></div></div>
       <div className="grid sm:grid-cols-3 gap-3">
         <StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent={balance >= 0 ? "#4B6350" : "#A34632"} />
         <StatCard icon="trendUp" label="إجمالي القبض" value={fmt(totalIn)} accent="#6E8F72" />
@@ -2510,7 +2632,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
               <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
                 <div className="min-w-0">
                   <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div>
-                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source || "حركة يدوي"}</div>
+                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.source === "manual" ? "يدوي" : tx.source || "حركة يدوية"}</div>
                 </div>
                 <span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>
               </div>
@@ -2554,6 +2676,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
           )}
         </div>
       </div>
+      {paymentDirection && <Modal title={paymentDirection === "in" ? "سند قبض من عميل" : "سند صرف إلى مورد"} onClose={() => setPaymentDirection(null)}><CashflowPaymentForm customers={customers} suppliers={suppliers} invoices={invoices} direction={paymentDirection} record={record} upsertBatch={upsertBatch} onClose={() => setPaymentDirection(null)} /></Modal>}
     </div>
   );
 }

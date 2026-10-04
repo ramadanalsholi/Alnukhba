@@ -72,6 +72,61 @@ create trigger app_records_updated_at
 before update on public.app_records
 for each row execute function public.set_app_record_updated_at();
 
+-- Save all records belonging to one accounting voucher in a single transaction.
+-- This prevents cash, contact-ledger, and invoice balances from being only partly saved.
+create or replace function public.upsert_app_records_batch(p_organization_id uuid, p_records jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  item jsonb;
+  target_collection text;
+  target_id text;
+  target_payload jsonb;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  if p_organization_id is null or not exists (
+    select 1 from public.organization_members m
+    where m.organization_id = p_organization_id and m.user_id = auth.uid()
+  ) then
+    raise exception 'Organization access denied';
+  end if;
+  if jsonb_typeof(p_records) is distinct from 'array' then
+    raise exception 'Records must be a JSON array';
+  end if;
+
+  for item in select value from jsonb_array_elements(p_records)
+  loop
+    target_collection := item->>'collection';
+    target_id := item->>'id';
+    target_payload := item->'payload';
+    if target_collection is null or target_collection not in (
+      'invoices', 'inventory', 'inventoryMovements', 'customers', 'suppliers',
+      'workers', 'attendance', 'treasury', 'expenses'
+    ) then
+      raise exception 'Invalid record collection';
+    end if;
+    if target_id is null or length(trim(target_id)) = 0
+       or jsonb_typeof(target_payload) is distinct from 'object'
+       or target_payload->>'id' is distinct from target_id then
+      raise exception 'Invalid record payload or id';
+    end if;
+
+    insert into public.app_records (organization_id, collection, id, payload)
+    values (p_organization_id, target_collection, target_id, target_payload)
+    on conflict (organization_id, collection, id)
+    do update set payload = excluded.payload;
+  end loop;
+end;
+$$;
+
+revoke all on function public.upsert_app_records_batch(uuid, jsonb) from public, anon;
+grant execute on function public.upsert_app_records_batch(uuid, jsonb) to authenticated;
+
 create or replace function public.get_or_create_my_organization(p_name text, p_code text default '')
 returns table (id uuid, organization_id uuid, name text, invite_code text)
 language plpgsql
