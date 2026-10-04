@@ -1,0 +1,2218 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>مطحن النخبة</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&family=El+Messiri:wght@500;600;700&display=swap" rel="stylesheet">
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<style>
+  :root {
+    --bg: #FAF7F1;
+    --card-bg: #ffffff;
+    --card-border: #e7e5e4;
+    --divider: #f0eee9;
+    --text-strong: #292524;
+    --text-body: #44403c;
+    --text-muted: #79716b;
+    --input-bg: #ffffff;
+    --warn-bg: #FBF2ED;
+    --warn-border: #E8C9BB;
+    --good-bg: #EEF3EC;
+    --good-border: #CFDECB;
+    --accent: #A6673B;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #1c1a17; --card-bg: #26241f; --card-border: #3c372f; --divider: #34302a;
+      --text-strong: #f3ede2; --text-body: #d8d0c2; --text-muted: #a39c8d; --input-bg: #2e2b25;
+      --warn-bg: #3a2a22; --warn-border: #5c4234; --good-bg: #22281f; --good-border: #3c4a36; --accent: #C17F4E;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #1c1a17; --card-bg: #26241f; --card-border: #3c372f; --divider: #34302a;
+    --text-strong: #f3ede2; --text-body: #d8d0c2; --text-muted: #a39c8d; --input-bg: #2e2b25;
+    --warn-bg: #3a2a22; --warn-border: #5c4234; --good-bg: #22281f; --good-border: #3c4a36; --accent: #C17F4E;
+  }
+  body { margin: 0; background: var(--bg); font-family: 'Cairo', sans-serif; }
+  ::-webkit-scrollbar { width: 8px; height: 8px; }
+  ::-webkit-scrollbar-thumb { background: var(--card-border); border-radius: 8px; }
+</style>
+</head>
+<body>
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useMemo, useRef } = React;
+
+// ضع قيم المشروع من Supabase هنا بعد إنشائه.
+const SUPABASE_URL = "";
+const SUPABASE_ANON_KEY = "";
+const hasSupabaseConfig = SUPABASE_URL.startsWith("https://") && !SUPABASE_ANON_KEY.startsWith("YOUR_");
+const supabaseClient = hasSupabaseConfig && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
+
+// ---------- icons ----------
+const ICON_PATHS = {
+  dashboard: <><rect x="3" y="3" width="7" height="7" rx="1.2"/><rect x="14" y="3" width="7" height="7" rx="1.2"/><rect x="3" y="14" width="7" height="7" rx="1.2"/><rect x="14" y="14" width="7" height="7" rx="1.2"/></>,
+  factory: <><path d="M4 21V11l5 3v-3l5 3V8l5 3v10H4z"/><line x1="2" y1="21" x2="22" y2="21"/></>,
+  receipt: <><path d="M6 2h12v19l-3-2-3 2-3-2-3 2V2z"/><line x1="9" y1="7" x2="15" y2="7"/><line x1="9" y1="11" x2="15" y2="11"/></>,
+  wallet: <><path d="M3 7a2 2 0 0 1 2-2h13a1 1 0 0 1 1 1v3"/><rect x="3" y="7" width="18" height="12" rx="2"/><circle cx="16.5" cy="13.5" r="1.4" fill="currentColor" stroke="none"/></>,
+  package: <><path d="M21 8l-9-5-9 5 9 5 9-5z"/><path d="M3 8v8l9 5 9-5V8"/><path d="M12 13v8"/></>,
+  plus: <><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></>,
+  minus: <line x1="5" y1="12" x2="19" y2="12"/>,
+  x: <><line x1="18" y1="6" x2="6" y2="18"/><line x1="6" y1="6" x2="18" y2="18"/></>,
+  search: <><circle cx="11" cy="11" r="7"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></>,
+  mappin: <><path d="M12 22s7-7.58 7-12a7 7 0 1 0-14 0c0 4.42 7 12 7 12z"/><circle cx="12" cy="10" r="2.3"/></>,
+  phone: <><rect x="6" y="2" width="12" height="20" rx="2.5"/><line x1="10" y1="18" x2="14" y2="18"/></>,
+  alert: <><path d="M12 3l10 17.5H2L12 3z"/><line x1="12" y1="9.5" x2="12" y2="14"/><circle cx="12" cy="17" r="0.7" fill="currentColor" stroke="none"/></>,
+  trash: <><line x1="4" y1="7" x2="20" y2="7"/><path d="M6 7l1 14h10l1-14"/><path d="M9 7V4h6v3"/></>,
+  check: <polyline points="4,12 9,17 20,6"/>,
+  trendUp: <><polyline points="3,17 9,11 13,15 21,7"/><polyline points="14,7 21,7 21,14"/></>,
+  trendDown: <><polyline points="3,7 9,13 13,9 21,17"/><polyline points="14,17 21,17 21,10"/></>,
+  calendar: <><rect x="3" y="5" width="18" height="16" rx="2"/><line x1="3" y1="10" x2="21" y2="10"/><line x1="8" y1="2" x2="8" y2="6"/><line x1="16" y1="2" x2="16" y2="6"/></>,
+  user: <><circle cx="12" cy="8" r="4"/><path d="M4 21c0-4 4-6 8-6s8 2 8 6"/></>,
+  users: <><circle cx="9" cy="8" r="3"/><path d="M2 20c0-3.3 2.8-5 7-5s7 1.7 7 5"/><path d="M17 3.2a3 3 0 0 1 0 5.6"/><path d="M22 20c0-2.5-1.7-4-4-4.6"/></>,
+  briefcase: <><rect x="2" y="7" width="20" height="13" rx="2"/><path d="M8 7V5a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><line x1="2" y1="13" x2="22" y2="13"/></>,
+  arrowRight: <><line x1="5" y1="12" x2="19" y2="12"/><polyline points="13,6 19,12 13,18"/></>,
+  truck: <><rect x="1" y="7" width="13" height="10" rx="1"/><path d="M14 10h4l3 3v4h-7"/><circle cx="5.5" cy="19" r="1.6"/><circle cx="17.5" cy="19" r="1.6"/></>,
+  rotate: <><path d="M3 12a9 9 0 1 0 3-6.7"/><polyline points="3,4 3,9 8,9"/></>,
+  ruler: <><rect x="2" y="9" width="20" height="6" rx="1"/><line x1="6" y1="9" x2="6" y2="12"/><line x1="10" y1="9" x2="10" y2="12"/><line x1="14" y1="9" x2="14" y2="12"/><line x1="18" y1="9" x2="18" y2="12"/></>,
+  hammer: <><path d="M15 4l5 5-2 2-5-5 2-2z"/><path d="M13 8l-9 9v3h3l9-9"/></>,
+  circleDot: <><circle cx="12" cy="12" r="9"/><circle cx="12" cy="12" r="2.3" fill="currentColor" stroke="none"/></>,
+  barChart: <><rect x="4" y="12" width="3.5" height="8"/><rect x="10.2" y="6" width="3.5" height="14"/><rect x="16.5" y="15" width="3.5" height="5"/></>,
+  download: <><path d="M12 3v12"/><polyline points="7,11 12,16 17,11"/><line x1="4" y1="21" x2="20" y2="21"/></>,
+  upload: <><path d="M12 21V9"/><polyline points="7,14 12,9 17,14"/><line x1="4" y1="21" x2="20" y2="21"/></>,
+};
+function Icon({ name, size = 16, color, style, className }) {
+  return (
+    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color || "currentColor"} strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" style={style} className={className}>
+      {ICON_PATHS[name]}
+    </svg>
+  );
+}
+
+// ---------- helpers ----------
+const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
+const todayISO = () => new Date().toISOString().slice(0, 10);
+const fmt = (n) => Number(n || 0).toLocaleString("en-US");
+const positiveNumber = (value) => Number.isFinite(Number(value)) && Number(value) > 0;
+const nonNegativeNumber = (value) => Number.isFinite(Number(value)) && Number(value) >= 0;
+const monthKey = (iso) => (iso || "").slice(0, 7);
+const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
+const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
+const contactBalance = (c) => (c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : t.type === "credit" ? -Number(t.amount) : 0), 0);
+const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
+const getCustomerOutstanding = (customer, projects, income) => {
+  const ledger = contactBalance(customer);
+  const sums = getCustomerProjects(customer, projects).map((project) => getProjectSummary(project, income));
+  const projectsRemaining = sums.reduce((sum, summary) => sum + summary.remaining, 0);
+  const projectsSurplus = sums.reduce((sum, summary) => sum + summary.surplus, 0);
+  return { ledger, projectsRemaining, projectsSurplus, total: ledger + projectsRemaining - projectsSurplus };
+};
+const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
+function numberToArabicWords(value) {
+  const num = Math.round(Number(value) || 0);
+  if (num === 0) return "صفر";
+  if (num < 0) return "سالب " + numberToArabicWords(-num);
+
+  const ones = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"];
+  const teens = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر", "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"];
+  const tens = ["", "", "عشرون", "ثلاثون", "أربعون", "خمسون", "ستون", "سبعون", "ثمانون", "تسعون"];
+  const hundreds = ["", "مائة", "مئتان", "ثلاثمائة", "أربعمائة", "خمسمائة", "ستمائة", "سبعمائة", "ثمانمائة", "تسعمائة"];
+
+  const threeDigits = (n) => {
+    const parts = [];
+    const h = Math.floor(n / 100);
+    const rem = n % 100;
+    if (h > 0) parts.push(hundreds[h]);
+    if (rem > 0) {
+      if (rem < 10) parts.push(ones[rem]);
+      else if (rem < 20) parts.push(teens[rem - 10]);
+      else {
+        const t = Math.floor(rem / 10);
+        const o = rem % 10;
+        parts.push(o > 0 ? ones[o] + " و" + tens[t] : tens[t]);
+      }
+    }
+    return parts.join(" و");
+  };
+
+  const groups = [
+    { value: 1000000000, singular: "مليار", dual: "ملياران", plural: "مليارات" },
+    { value: 1000000, singular: "مليون", dual: "مليونان", plural: "ملايين" },
+    { value: 1000, singular: "ألف", dual: "ألفان", plural: "آلاف" },
+  ];
+
+  let n = num;
+  const resultParts = [];
+  for (const group of groups) {
+    const count = Math.floor(n / group.value);
+    n = n % group.value;
+    if (count > 0) {
+      if (count === 1) resultParts.push(group.singular);
+      else if (count === 2) resultParts.push(group.dual);
+      else if (count <= 10) resultParts.push(threeDigits(count) + " " + group.plural);
+      else resultParts.push(threeDigits(count) + " " + group.singular);
+    }
+  }
+  if (n > 0) resultParts.push(threeDigits(n));
+  return resultParts.join(" و");
+}
+const getProjectPayments = (project, income = []) => {
+  const embeddedPayments = (project.payments || []).map((payment) => ({
+    ...payment,
+    paymentId: payment.paymentId || payment.id,
+    projectId: project.id,
+  }));
+  const incomePayments = income
+    .filter((entry) => entry.projectId === project.id)
+    .map((entry) => ({ ...entry, paymentId: entry.paymentId || entry.id }));
+  const unique = new Map();
+  [...embeddedPayments, ...incomePayments].forEach((payment) => {
+    const key = payment.paymentId || payment.id;
+    if (key) unique.set(key, payment);
+  });
+  return Array.from(unique.values());
+};
+const projectCost = (project) => (project.measurements || []).reduce((sum, measurement) => sum + Number(measurement.totalAmount || 0), 0);
+const getProjectSummary = (project, income = []) => {
+  const cost = projectCost(project);
+  const paid = getProjectPayments(project, income).reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+  const waived = Math.min(cost, Math.max(0, Number(project.waivedAmount || 0)));
+  const completed = project.status === "مكتمل";
+  const hasMeasure = (project.measurements || []).length > 0;
+  const net = Math.round((cost - waived - paid) * 1000) / 1000;
+  const extra = Math.max(0, -net);
+  return { cost, paid, waived, completed, hasMeasure, remaining: Math.max(0, net), surplus: completed ? extra : 0, advance: completed ? 0 : extra, settled: completed && hasMeasure && net <= 0 };
+};
+const getUniqueIncome = (income = []) => {
+  const unique = new Map();
+  income.forEach((entry) => {
+    const key = entry.projectId ? (entry.paymentId || entry.id) : entry.id;
+    if (key) unique.set(key, entry);
+  });
+  return Array.from(unique.values());
+};
+const getAllProjectIncome = (projects = [], income = []) => {
+  const unique = new Map();
+  getUniqueIncome(income.filter((entry) => !entry.projectId)).forEach((entry) => unique.set(entry.id, entry));
+  projects.forEach((project) => {
+    getProjectPayments(project, income).forEach((payment) => {
+      const key = payment.paymentId || payment.id;
+      if (key) unique.set(key, { ...payment, customerName: payment.customerName || project.customerName, projectId: project.id });
+    });
+  });
+  return Array.from(unique.values());
+};
+const upsertSupplierDebt = (supplier, transaction) => {
+  const transactions = supplier.transactions || [];
+  const exists = transactions.some((item) => item.id === transaction.id);
+  return {
+    ...supplier,
+    transactions: exists ? transactions.map((item) => item.id === transaction.id ? { ...item, ...transaction } : item) : [transaction, ...transactions],
+  };
+};
+const getSupplierDebtInvoices = (supplierId, invoices = []) => invoices
+  .filter((invoice) => invoice.supplierId === supplierId && invoice.debtTransactionId && positiveNumber(invoice.amount))
+  .sort((a, b) => (a.date || '').localeCompare(b.date || '') || String(a.id).localeCompare(String(b.id)));
+const getSupplierStatement = (supplier, invoices = []) => {
+  const debtInvoices = getSupplierDebtInvoices(supplier.id, invoices);
+  const transactions = supplier.transactions || [];
+  const paidByInvoice = new Map();
+  let allocatedTotal = 0;
+  transactions.filter((transaction) => transaction.supplierPayment && Array.isArray(transaction.allocations)).forEach((transaction) => {
+    transaction.allocations.forEach((allocation) => {
+      const amount = Math.max(0, Number(allocation.amount || 0));
+      if (!amount || !debtInvoices.some((invoice) => invoice.id === allocation.invoiceId)) return;
+      paidByInvoice.set(allocation.invoiceId, (paidByInvoice.get(allocation.invoiceId) || 0) + amount);
+      allocatedTotal += amount;
+    });
+  });
+  const rows = debtInvoices.map((invoice) => ({
+    invoice,
+    paid: Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0),
+    remaining: Math.max(0, Number(invoice.amount || 0) - Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0)),
+  }));
+  const supplierPaymentTotal = transactions
+    .filter((transaction) => transaction.supplierPayment)
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
+  let unallocatedCredits = transactions
+    .filter((transaction) => transaction.type === "credit" && !transaction.supplierPayment)
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0) + Math.max(0, supplierPaymentTotal - allocatedTotal);
+  rows.forEach((row) => {
+    const extra = Math.min(row.remaining, unallocatedCredits);
+    row.paid += extra;
+    row.remaining -= extra;
+    unallocatedCredits -= extra;
+  });
+  const invoiceDebt = rows.reduce((sum, row) => sum + Number(row.remaining || 0), 0);
+  const invoicePaid = rows.reduce((sum, row) => sum + Number(row.paid || 0), 0);
+  const invoiceDebtTransactionIds = new Set(debtInvoices.map((invoice) => invoice.debtTransactionId));
+  const manualBalance = transactions
+    .filter((transaction) => !invoiceDebtTransactionIds.has(transaction.id) && !transaction.supplierPayment && transaction.type === "debit")
+    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
+  const paymentExcess = unallocatedCredits;
+  const net = invoiceDebt + manualBalance - paymentExcess;
+  return { rows, invoiceDebt, invoicePaid, manualBalance, paymentExcess, owed: Math.max(0, net), credit: Math.max(0, -net), totalInvoices: debtInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0) };
+};
+const allocateSupplierPayment = (supplier, invoices, amount) => {
+  const statement = getSupplierStatement(supplier, invoices);
+  let remaining = Number(amount || 0);
+  return statement.rows.filter((row) => row.remaining > 0).map((row) => {
+    const allocated = Math.min(row.remaining, remaining);
+    remaining -= allocated;
+    return allocated > 0 ? { invoiceId: row.invoice.id, amount: allocated } : null;
+  }).filter(Boolean);
+};
+
+const PRODUCT_TYPES = ["قهوة", "تعبئة", "أخرى"];
+const STATUSES = ["جديد", "قيد التنفيذ", "مكتمل"];
+const STATUS_COLOR = {
+  "جديد": { bg: "#EFE6D8", fg: "#8A6A32" },
+  "قيد التنفيذ": { bg: "#E4E9E2", fg: "#4B6350" },
+  "مكتمل": { bg: "#E9E4DC", fg: "#5C4A38" },
+};
+const ITEM_SUGGESTIONS = ["بن أخضر", "بن محمص", "أكياس", "عبوات", "أغطية"];
+const EXPENSE_TYPES = ["كهرباء", "إيجار", "رواتب", "نقل", "صيانة", "اتصالات", "أخرى"];
+const ATTENDANCE_STATUSES = ["حاضر", "نصف يوم", "غائب"];
+const ATT_COLOR = { "حاضر": { bg: "#EEF3EC", fg: "#4B6350" }, "نصف يوم": { bg: "#EFE6D8", fg: "#8A6A32" }, "غائب": { bg: "#FBF2ED", fg: "#A34632" } };
+const COLLECTIONS = ["invoices", "inventory", "inventoryMovements", "customers", "suppliers", "workers", "attendance", "treasury", "expenses"];
+const LOCAL_PREFIX = "elite_mill_app_";
+
+// ---------- small UI atoms ----------
+function Badge({ children, bg, fg }) {
+  return <span style={{ background: bg, color: fg }} className="inline-flex items-center gap-1 rounded-full px-2.5 py-1 text-xs font-medium whitespace-nowrap">{children}</span>;
+}
+function StatCard({ icon, label, value, sub, accent }) {
+  return (
+    <div className="rounded-2xl border p-4 flex flex-col gap-3 min-w-0" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+      <div className="flex items-center justify-between">
+        <span className="text-sm" style={{ color: "var(--text-muted)" }}>{label}</span>
+        <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: accent + "1f" }}><Icon name={icon} size={18} color={accent} /></div>
+      </div>
+      <div>
+        <div className="text-2xl font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>{value}</div>
+        {sub && <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{sub}</div>}
+      </div>
+    </div>
+  );
+}
+function EmptyState({ icon, title, sub }) {
+  return (
+    <div className="flex flex-col items-center justify-center text-center py-14" style={{ color: "var(--text-muted)" }}>
+      <Icon name={icon} size={34} style={{ marginBottom: 12, opacity: 0.5 }} />
+      <div className="font-medium" style={{ color: "var(--text-body)" }}>{title}</div>
+      {sub && <div className="text-sm mt-1">{sub}</div>}
+    </div>
+  );
+}
+function notify(message, type = "error") {
+  window.dispatchEvent(new CustomEvent("factory:toast", { detail: { message, type } }));
+}
+function ToastHost() {
+  const [toasts, setToasts] = useState([]);
+  useEffect(() => {
+    const onToast = (event) => {
+      const id = uid();
+      setToasts((prev) => [...prev, { id, message: event.detail?.message || "حدث أمر غير متوقع", type: event.detail?.type || "error" }]);
+      window.setTimeout(() => setToasts((prev) => prev.filter((toast) => toast.id !== id)), 4200);
+    };
+    window.addEventListener("factory:toast", onToast);
+    return () => window.removeEventListener("factory:toast", onToast);
+  }, []);
+  return <div className="fixed top-4 left-4 right-4 z-[100] flex flex-col items-center gap-2 pointer-events-none" dir="rtl">
+    {toasts.map((toast) => <div key={toast.id} role="status" className="pointer-events-auto w-full max-w-md rounded-xl border px-4 py-3 text-sm shadow-lg" style={{ background: toast.type === "success" ? "var(--good-bg)" : "var(--warn-bg)", borderColor: toast.type === "success" ? "var(--good-border)" : "var(--warn-border)", color: toast.type === "success" ? "#4B6350" : "#A34632" }}>{toast.message}</div>)}
+  </div>;
+}
+
+function FieldLabel({ children }) { return <label className="text-xs mb-1 block" style={{ color: "var(--text-muted)" }}>{children}</label>; }
+function TextInput(props) {
+  const { className, type, min, ...rest } = props;
+  return <input {...rest} type={type} min={type === "number" ? (min ?? 0) : min} className={"w-full rounded-lg border px-3 py-2 text-sm outline-none transition " + (className || "")} style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />;
+}
+function Select(props) {
+  const { className, children, ...rest } = props;
+  return <select {...rest} className={"w-full rounded-lg border px-3 py-2 text-sm outline-none transition " + (className || "")} style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }}>{children}</select>;
+}
+function PrimaryButton({ children, onClick, type = "button", full, disabled }) {
+  return (
+    <button type={type} onClick={onClick} disabled={disabled} className={"inline-flex items-center justify-center gap-1.5 rounded-lg px-4 py-2 text-sm font-medium text-white transition active:scale-[0.98] disabled:opacity-40 " + (full ? "w-full" : "")} style={{ background: "var(--accent)" }}>
+      {children}
+    </button>
+  );
+}
+function GhostButton({ children, onClick, danger }) {
+  return (
+    <button type="button" onClick={onClick} className="inline-flex items-center justify-center gap-1.5 rounded-lg px-3 py-2 text-sm font-medium border transition active:scale-[0.98]"
+      style={danger ? { color: "#A34632", borderColor: "var(--warn-border)", background: "var(--warn-bg)" } : { color: "var(--text-body)", borderColor: "var(--card-border)", background: "var(--card-bg)" }}>
+      {children}
+    </button>
+  );
+}
+function Modal({ title, onClose, children, wide }) {
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-3" style={{ background: "#00000066" }}>
+      <div className={"rounded-2xl w-full max-h-[90vh] flex flex-col shadow-2xl " + (wide ? "max-w-3xl" : "max-w-md")} style={{ background: "var(--bg)" }} dir="rtl">
+        <div className="flex items-center justify-between px-5 py-4 border-b shrink-0" style={{ borderColor: "var(--card-border)" }}>
+          <h3 className="font-bold text-base" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>{title}</h3>
+          <button onClick={onClose} style={{ color: "var(--text-muted)" }}><Icon name="x" size={20} /></button>
+        </div>
+        <div className="overflow-y-auto px-5 py-4">{children}</div>
+      </div>
+    </div>
+  );
+}
+function ConfirmInline({ onConfirm, onCancel, label }) {
+  return (
+    <div className="flex items-center gap-1.5">
+      <span className="text-xs" style={{ color: "var(--text-muted)" }}>{label || "حذف؟"}</span>
+      <button onClick={onConfirm} className="text-xs px-2 py-1 rounded text-white" style={{ background: "#A34632" }}>تأكيد</button>
+      <button onClick={onCancel} className="text-xs px-2 py-1 rounded border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}>إلغاء</button>
+    </div>
+  );
+}
+function BarBreakdown({ rows }) {
+  const max = Math.max(1, ...rows.map((r) => r.total));
+  return (
+    <div className="flex flex-col gap-2.5">
+      {rows.map((r) => (
+        <div key={r.label}>
+          <div className="flex items-center justify-between text-xs mb-1" style={{ color: "var(--text-body)" }}>
+            <span>{r.label}</span><span className="font-medium">{fmt(r.total)}</span>
+          </div>
+          <div className="h-2 rounded-full overflow-hidden" style={{ background: "var(--divider)" }}>
+            <div className="h-full rounded-full" style={{ width: (r.total / max * 100) + "%", background: "var(--accent)" }} />
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+// ---------- persistence layer ----------
+function useFactoryData(organizationId) {
+  const [downloadsNs, setDownloadsNs] = useState(null);
+  const [reloadToken, setReloadToken] = useState(0);
+  const [ready, setReady] = useState(false);
+  const [usingLocal, setUsingLocal] = useState(false);
+  const [error, setError] = useState("");
+  const initial = {};
+  COLLECTIONS.forEach((c) => (initial[c] = []));
+  const [data, setData] = useState(initial);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadLocal = () => {
+      setUsingLocal(true);
+      const loaded = {};
+      COLLECTIONS.forEach((name) => { try { loaded[name] = JSON.parse(localStorage.getItem(LOCAL_PREFIX + name) || "[]"); } catch (e) { loaded[name] = []; } });
+      setData(loaded);
+      setReady(true);
+    };
+    const loadRemote = async () => {
+      const { data: rows, error: queryError } = await supabaseClient.from("app_records").select("collection,id,payload").eq("organization_id", organizationId);
+      if (queryError) { if (!cancelled) { setError(queryError.message); setReady(true); } return; }
+      const loaded = {};
+      COLLECTIONS.forEach((name) => (loaded[name] = []));
+      (rows || []).forEach((row) => { if (loaded[row.collection]) loaded[row.collection].push({ id: row.id, ...(row.payload || {}) }); });
+      if (!cancelled) { setData(loaded); setReady(true); }
+    };
+    if (!hasSupabaseConfig || !organizationId) { loadLocal(); return () => { cancelled = true; }; }
+    loadRemote();
+    const channel = supabaseClient.channel("factory-records-" + organizationId)
+      .on("postgres_changes", { event: "*", schema: "public", table: "app_records", filter: "organization_id=eq." + organizationId }, loadRemote)
+      .subscribe();
+    return () => { cancelled = true; supabaseClient.removeChannel(channel); };
+  }, [organizationId, reloadToken]);
+
+  const saveLocal = (name, list) => { try { localStorage.setItem(LOCAL_PREFIX + name, JSON.stringify(list)); } catch (e) { console.error(e); } };
+
+  const upsert = async (name, docObj, options = {}) => {
+    if (supabaseClient && organizationId) {
+      const { error: upsertError } = await supabaseClient.from("app_records").upsert({ organization_id: organizationId, collection: name, id: docObj.id, payload: docObj }, { onConflict: "organization_id,collection,id" });
+      if (upsertError) {
+        setError(upsertError.message);
+        if (options.throwOnError) throw upsertError;
+        return false;
+      }
+      setData((prev) => {
+        const list = prev[name] || [];
+        const idx = list.findIndex((d) => d.id === docObj.id);
+        const next = idx === -1 ? [docObj, ...list] : list.map((d) => (d.id === docObj.id ? docObj : d));
+        return { ...prev, [name]: next };
+      });
+      return true;
+    } else {
+      setData((prev) => {
+        const list = prev[name] || [];
+        const idx = list.findIndex((d) => d.id === docObj.id);
+        const next = idx === -1 ? [docObj, ...list] : list.map((d) => (d.id === docObj.id ? docObj : d));
+        saveLocal(name, next);
+        return { ...prev, [name]: next };
+      });
+      return true;
+    }
+  };
+  const remove = async (name, id) => {
+    if (supabaseClient && organizationId) {
+      const { error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id);
+      if (deleteError) { setError(deleteError.message); return; }
+      setData((prev) => ({ ...prev, [name]: (prev[name] || []).filter((d) => d.id !== id) }));
+    } else {
+      setData((prev) => { const next = (prev[name] || []).filter((d) => d.id !== id); saveLocal(name, next); return { ...prev, [name]: next }; });
+    }
+  };
+
+  const reload = () => setReloadToken((value) => value + 1);
+  const importBackup = async (backup) => {
+    const validationError = validateJsonBackup(backup);
+    if (validationError) throw new Error(validationError);
+    downloadJsonBackup(data, "نسخة-احتياطية-كاملة-المطحن-" + todayISO() + "-قبل-الاستيراد.json");
+    let added = 0;
+    let updated = 0;
+    for (const name of COLLECTIONS) {
+      const currentIds = new Set((data[name] || []).map((record) => record.id));
+      for (const record of backup.collections[name]) {
+        if (currentIds.has(record.id)) updated += 1;
+        else added += 1;
+        await upsert(name, record, { throwOnError: true });
+      }
+    }
+    reload();
+    return { added, updated };
+  };
+
+  return { ready, usingLocal, data, upsert, remove, downloadsNs, error, reload, importBackup };
+}
+
+async function exportBackup(downloadsNs, data) {
+  if (!window.XLSX) { notify("تعذر تحميل مكتبة التصدير، حاول تحديث الصفحة."); return; }
+  const wb = XLSX.utils.book_new();
+  const sheets = {
+    "المشتريات والمبيعات": data.invoices.map((i) => ({ "رقم الفاتورة": i.invoiceNumber || "", الاتجاه: i.direction, الجهة: i.contactName || i.supplierName || i.customerName || "", المبلغ: i.amount, التاريخ: i.date, الوصف: i.description })),
+    "المخزون": data.inventory.map((i) => ({ الصنف: i.name, الكمية: i.quantity, الوحدة: i.unit, "حد التنبيه": i.minThreshold })),
+    "حركات المخزن": data.inventoryMovements.map((m) => ({ الصنف: m.itemName, الاتجاه: m.direction === "in" ? "قبض" : "صرف", الكمية: m.quantity, التاريخ: m.date, المصدر: m.note })),
+    "الخزينة الرئيسية": (data.treasury[0]?.transactions || []).map((t) => ({ الاتجاه: t.direction === "in" ? "قبض" : "صرف", المبلغ: t.amount, التاريخ: t.date, الوصف: t.note })),
+    "العملاء": data.customers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
+    "العمال": data.workers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
+    "الموردون": data.suppliers.map((c) => ({ الاسم: c.name, الهاتف: c.phone, الرصيد: contactBalance(c), ملاحظات: c.notes })),
+    "الحضور": data.attendance.map((a) => ({ العامل: a.workerName, التاريخ: a.date, الحالة: a.status })),
+  };
+  Object.entries(sheets).forEach(([name, rows]) => {
+    const ws = XLSX.utils.json_to_sheet(rows.length ? rows : [{ "لا توجد بيانات": "" }]);
+    XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+  });
+  const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+  const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+  const filename = "نسخة-احتياطية-المطحن-" + todayISO() + ".xlsx";
+  if (downloadsNs) { try { await downloadsNs.save({ filename, data: blob }); } catch (e) { console.error("export failed", e); } }
+  else downloadBlob(blob, filename);
+}
+
+function downloadBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url; link.download = filename; link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+const buildJsonBackup = (data) => ({
+  schemaVersion: 1,
+  exportedAt: new Date().toISOString(),
+  collections: Object.fromEntries(COLLECTIONS.map((name) => [name, data[name] || []])),
+});
+
+function downloadJsonBackup(data, filename = "نسخة-احتياطية-كاملة-المطحن-" + todayISO() + ".json") {
+  const json = JSON.stringify(buildJsonBackup(data), null, 2);
+  downloadBlob(new Blob([json], { type: "application/json;charset=utf-8" }), filename);
+}
+
+function validateJsonBackup(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return "ملف النسخة يجب أن يحتوي على كائن JSON.";
+  if (value.schemaVersion !== 1) return "إصدار النسخة غير مدعوم.";
+  if (!value.collections || typeof value.collections !== "object" || Array.isArray(value.collections)) return "قسم collections غير موجود أو غير صالح.";
+  for (const name of COLLECTIONS) {
+    const records = value.collections[name];
+    if (!Array.isArray(records)) return `مجموعة ${name} غير موجودة أو ليست مصفوفة.`;
+    const ids = new Set();
+    for (const record of records) {
+      if (!record || typeof record !== "object" || Array.isArray(record)) return `يوجد سجل تالف في مجموعة ${name}.`;
+      if (typeof record.id !== "string" || !record.id.trim()) return `يوجد سجل بلا معرف في مجموعة ${name}.`;
+      if (ids.has(record.id)) return `المعرف ${record.id} مكرر داخل مجموعة ${name}.`;
+      ids.add(record.id);
+      if (["invoices", "expenses", "income", "personalLog"].includes(name) && !positiveNumber(record.amount)) return `المبلغ في مجموعة ${name} يجب أن يكون موجبًا.`;
+      if (name === "projects") {
+        for (const payment of record.payments || []) if (!payment || !positiveNumber(payment.amount)) return `دفعة غير صالحة في المشروع ${record.id}.`;
+      }
+      for (const transaction of record.transactions || []) if (!transaction || !positiveNumber(transaction.amount)) return `معاملة غير صالحة في السجل ${record.id}.`;
+    }
+  }
+  return "";
+}
+
+function useAuth() {
+  const [session, setSession] = useState(null);
+  const [organization, setOrganization] = useState(null);
+  const [loading, setLoading] = useState(hasSupabaseConfig);
+  const [error, setError] = useState("");
+
+  const loadOrganization = async (currentSession) => {
+    if (!currentSession) { setSession(null); setOrganization(null); setLoading(false); return; }
+    setSession(currentSession);
+    const organizationName = currentSession.user.user_metadata?.organization_name || "مطحن النخبة";
+    const organizationCode = currentSession.user.user_metadata?.organization_code || "";
+    const { data, error: organizationError } = await supabaseClient.rpc("get_or_create_my_organization", { p_name: organizationName, p_code: organizationCode });
+    if (organizationError) setError(organizationError.message);
+    else setOrganization(Array.isArray(data) ? data[0] : data);
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    if (!hasSupabaseConfig) return undefined;
+    supabaseClient.auth.getSession().then(({ data }) => loadOrganization(data.session));
+    const { data: listener } = supabaseClient.auth.onAuthStateChange((_event, nextSession) => loadOrganization(nextSession));
+    return () => listener.subscription.unsubscribe();
+  }, []);
+
+  const signIn = (email, password) => supabaseClient.auth.signInWithPassword({ email, password });
+  const signUp = (email, password, organizationName, organizationCode) => supabaseClient.auth.signUp({ email, password, options: { data: { organization_name: organizationName, organization_code: organizationCode } } });
+  const signOut = () => supabaseClient.auth.signOut();
+  return { session, organization, loading, error, signIn, signUp, signOut };
+}
+
+function AuthScreen({ auth }) {
+  const [mode, setMode] = useState("signin");
+  const [email, setEmail] = useState("");
+  const [password, setPassword] = useState("");
+  const [organizationName, setOrganizationName] = useState("مطحن النخبة");
+  const [organizationCode, setOrganizationCode] = useState("");
+  const [message, setMessage] = useState("");
+  const [busy, setBusy] = useState(false);
+  const submit = async () => {
+    if (!email.trim() || password.length < 6 || (mode === "signup" && !organizationName.trim())) return;
+    setBusy(true); setMessage("");
+    const result = mode === "signin" ? await auth.signIn(email.trim(), password) : await auth.signUp(email.trim(), password, organizationName.trim(), organizationCode.trim());
+    setBusy(false);
+    if (result.error) setMessage(result.error.message);
+    else if (mode === "signup" && !result.data.session) setMessage("تم إنشاء الحساب. افحص بريدك لتأكيد الحساب ثم سجّل الدخول.");
+  };
+  return (
+    <div dir="rtl" className="min-h-screen flex items-center justify-center p-4" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
+      <div className="w-full max-w-md rounded-2xl border p-6 shadow-sm" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+        <h1 className="text-xl font-bold mb-1" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مطحن النخبة</h1>
+        <p className="text-sm mb-5" style={{ color: "var(--text-muted)" }}>{mode === "signin" ? "سجّل الدخول للوصول إلى بيانات الشركة" : "أنشئ حساب الشركة الأول"}</p>
+        <div className="flex flex-col gap-3">
+          {mode === "signup" && <>
+            <div><FieldLabel>اسم الشركة</FieldLabel><TextInput value={organizationName} onChange={(e) => setOrganizationName(e.target.value)} /></div>
+            <div><FieldLabel>رمز الشركة للانضمام (اتركه فارغًا عند إنشاء شركة جديدة)</FieldLabel><TextInput value={organizationCode} onChange={(e) => setOrganizationCode(e.target.value)} /></div>
+          </>}
+          <div><FieldLabel>البريد الإلكتروني</FieldLabel><TextInput type="email" value={email} onChange={(e) => setEmail(e.target.value)} /></div>
+          <div><FieldLabel>كلمة المرور</FieldLabel><TextInput type="password" value={password} onChange={(e) => setPassword(e.target.value)} /></div>
+          <PrimaryButton onClick={submit} full disabled={busy || !email.trim() || password.length < 6}>{busy ? "جارٍ التنفيذ..." : mode === "signin" ? "تسجيل الدخول" : "إنشاء الحساب"}</PrimaryButton>
+          {message && <div className="text-xs rounded-lg p-2" style={{ background: "var(--warn-bg)", color: "#A34632" }}>{message}</div>}
+          <button onClick={() => { setMode(mode === "signin" ? "signup" : "signin"); setMessage(""); }} className="text-xs" style={{ color: "var(--accent)" }}>{mode === "signin" ? "إنشاء حساب جديد" : "لديك حساب؟ سجّل الدخول"}</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---------- App ----------
+function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
+  const { ready, usingLocal, data, upsert, remove, downloadsNs, error, importBackup } = useFactoryData(organizationId);
+  const { invoices, inventory, inventoryMovements, customers, suppliers, workers, attendance, treasury, expenses } = data;
+
+  const [tab, setTab] = useState("dashboard");
+  const [accountsSub, setAccountsSub] = useState("customers");
+  const [reportMonth, setReportMonth] = useState(monthKey(todayISO()));
+  const importInputRef = useRef(null);
+
+  const lowStock = useMemo(() => inventory.filter((i) => Number(i.quantity) <= Number(i.minThreshold || 0)), [inventory]);
+  const thisMonth = monthKey(todayISO());
+  const monthInvoices = useMemo(() => invoices.filter((x) => monthKey(x.date) === thisMonth).reduce((s, x) => s + Number(x.amount || 0), 0), [invoices, thisMonth]);
+  const customerDebt = useMemo(() => customers.reduce((s, c) => s + Math.max(0, contactBalance(c)), 0), [customers]);
+
+  const handleImportBackup = async (event) => {
+    const file = event.target.files?.[0];
+    event.target.value = "";
+    if (!file) return;
+    try {
+      const backup = JSON.parse(await file.text());
+      const result = await importBackup(backup);
+      notify(`تم استيراد النسخة بنجاح: ${result.added} سجل جديد و${result.updated} سجل محدث.`, "success");
+    } catch (importError) {
+      notify("توقف الاستيراد عند فشل حفظ أحد السجلات. قد تكون بعض السجلات السابقة قد حُفظت؛ استخدم نسخة ما قبل الاستيراد للاسترجاع." + (importError?.message ? " التفاصيل: " + importError.message : ""));
+    }
+  };
+
+  const NAV = [
+    { key: "dashboard", label: "لوحة التحكم", icon: "dashboard" },
+    { key: "purchases", label: "المشتريات", icon: "truck" },
+    { key: "sales", label: "المبيعات", icon: "receipt" },
+    { key: "treasury", label: "الخزينة الرئيسية", icon: "wallet" },
+    { key: "expenses", label: "المصروفات اليومية", icon: "trendDown" },
+    { key: "accounts", label: "الحسابات والديون", icon: "users" },
+    { key: "inventory", label: "المخزون", icon: "package" },
+    { key: "reports", label: "التقارير الشهرية", icon: "barChart" },
+  ];
+
+  if (!ready) {
+    return <div dir="rtl" className="min-h-[500px] flex items-center justify-center" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}><div className="text-sm" style={{ color: "var(--text-muted)" }}>جارِ تحميل البيانات...</div></div>;
+  }
+
+  return (
+    <div dir="rtl" className="w-full min-h-screen flex" style={{ background: "var(--bg)", fontFamily: "'Cairo', sans-serif" }}>
+      <aside className="w-[220px] shrink-0 hidden sm:flex sticky top-0 h-screen overflow-y-auto flex-col py-5 px-3 gap-1" style={{ background: "#2B2A27" }}>
+        <div className="px-2 pb-5 flex items-center gap-2">
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <div>
+            <div className="text-white font-bold text-sm" style={{ fontFamily: "'El Messiri', sans-serif" }}>مطحن النخبة</div>
+            <div className="text-[11px] text-stone-400">إدارة المحاسبة</div>
+          </div>
+        </div>
+        <div className="flex flex-col gap-1 overflow-y-auto">
+          {NAV.map((n) => {
+            const active = tab === n.key;
+            return (
+              <button key={n.key} onClick={() => setTab(n.key)} className="flex items-center gap-2.5 px-3 py-2.5 rounded-xl text-sm transition text-right"
+                style={{ background: active ? "var(--accent)" : "transparent", color: active ? "white" : "#C9C4BB" }}>
+                <Icon name={n.icon} size={17} />{n.label}
+              </button>
+            );
+          })}
+        </div>
+        <div className="mt-auto pt-3 flex flex-col gap-2">
+          <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+            <Icon name="download" size={14} /> نسخة احتياطية (Excel)
+          </button>
+          <button onClick={() => downloadJsonBackup(data)} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+            <Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)
+          </button>
+          <button onClick={() => importInputRef.current?.click()} className="flex items-center gap-2 px-3 py-2.5 rounded-xl text-xs border border-stone-600 text-stone-300 hover:text-white transition">
+            <Icon name="upload" size={14} /> استيراد نسخة JSON
+          </button>
+          <input ref={importInputRef} type="file" accept=".json,application/json" onChange={handleImportBackup} className="hidden" />
+          <div className="px-2 text-[10px] leading-relaxed text-stone-500">الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
+          {usingLocal && <div className="px-2 text-[10px] leading-relaxed text-stone-500">يعمل التطبيق حاليًا بتخزين محلي على هذا المتصفح فقط.</div>}
+          {organizationCode && <div className="px-2 text-[10px] leading-relaxed text-stone-400">رمز مشاركة الشركة: {organizationCode}</div>}
+          {email && <button onClick={onSignOut} className="px-3 py-2 text-xs text-right text-stone-300 hover:text-white">تسجيل الخروج ({email})</button>}
+        </div>
+      </aside>
+
+      <div className="sm:hidden fixed bottom-0 inset-x-0 z-40 flex justify-around py-2 overflow-x-auto" style={{ background: "#2B2A27" }}>
+        {NAV.map((n) => {
+          const active = tab === n.key;
+          return (
+            <button key={n.key} onClick={() => setTab(n.key)} className="flex flex-col items-center gap-0.5 px-2 py-1 shrink-0">
+              <Icon name={n.icon} size={18} color={active ? "var(--accent)" : "#8b8880"} />
+              <span className="text-[8px]" style={{ color: active ? "var(--accent)" : "#8b8880" }}>{n.label}</span>
+            </button>
+          );
+        })}
+      </div>
+
+      <main className="flex-1 min-w-0 p-4 sm:p-6 pb-24 sm:pb-6">
+        <div className="sm:hidden mb-4 rounded-xl border px-3 py-3 flex items-center gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="w-9 h-9 rounded-xl flex items-center justify-center shrink-0" style={{ background: "var(--accent)" }}><Icon name="factory" size={18} color="white" /></div>
+          <div className="min-w-0 flex-1">
+            <div className="text-sm font-bold truncate" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>مطحن النخبة</div>
+            <div className="text-[10px] truncate" style={{ color: "var(--text-muted)" }}>{email || "حساب الشركة"}{organizationCode ? " · رمز الشركة: " + organizationCode : ""}</div>
+          </div>
+          {email && <button onClick={onSignOut} className="shrink-0 text-xs px-2.5 py-1.5 rounded-lg border" style={{ color: "var(--text-body)", borderColor: "var(--card-border)" }}>تسجيل الخروج</button>}
+        </div>
+        {error && <div className="mb-4 rounded-lg px-3 py-2 text-xs" style={{ background: "var(--warn-bg)", color: "#A34632" }}>تعذر مزامنة البيانات: {error}</div>}
+        <div className="sm:hidden mb-4 rounded-xl border p-3 flex flex-col gap-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="text-xs font-semibold" style={{ color: "var(--text-body)" }}>النسخ الاحتياطي</div>
+          <div className="grid grid-cols-1 gap-2">
+            <button onClick={() => exportBackup(downloadsNs, data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية (Excel)</button>
+            <button onClick={() => downloadJsonBackup(data)} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="download" size={14} /> نسخة احتياطية كاملة (JSON)</button>
+            <button onClick={() => importInputRef.current?.click()} className="flex items-center justify-center gap-2 px-3 py-2.5 rounded-lg text-xs border" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}><Icon name="upload" size={14} /> استيراد نسخة JSON</button>
+          </div>
+          <div className="text-[10px] leading-relaxed" style={{ color: "var(--text-muted)" }}>الاستيراد يدمج البيانات ويحدّث السجلات ذات المعرف نفسه.</div>
+        </div>
+        {tab === "dashboard" && (
+          <Dashboard invoices={invoices} lowStock={lowStock} customerDebt={customerDebt} treasury={treasury} goInvoices={() => setTab("purchases")} />
+        )}
+        {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "accounts" && (
+          <AccountsTab sub={accountsSub} setSub={setAccountsSub}
+            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} upsert={upsert} remove={remove} />
+        )}
+        {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} upsert={upsert} remove={remove} />}
+        {tab === "reports" && <MillReportsTab month={reportMonth} setMonth={setReportMonth} invoices={invoices} expenses={expenses} customers={customers} suppliers={suppliers} inventory={inventory} inventoryMovements={inventoryMovements} treasury={treasury} />}
+      </main>
+    </div>
+  );
+}
+
+// ---------- Dashboard ----------
+function Dashboard({ invoices, lowStock, customerDebt, treasury, goInvoices }) {
+  const recentInvoices = [...invoices].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 5);
+  const cashBalance = Number(treasury?.[0]?.openingBalance || 0) + (treasury?.[0]?.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+
+  return (
+    <div className="flex flex-col gap-6">
+      <div>
+        <h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>لوحة التحكم</h1>
+        <p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>نظرة عامة على مطحن النخبة اليوم</p>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatCard icon="wallet" label="رصيد الخزينة الرئيسية" value={fmt(cashBalance)} accent="#6E8F72" />
+        <StatCard icon="receipt" label="إجمالي الفواتير" value={invoices.length} accent="#C69C4B" />
+        <StatCard icon="alert" label="مواد ناقصة بالمخزون" value={lowStock.length} accent="#A34632" />
+        <StatCard icon="users" label="مستحقات العملاء" value={fmt(customerDebt)} accent="#A6673B" />
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
+        <StatCard icon="users" label="مستحقات على العملاء" value={fmt(customerDebt)} accent="#A6673B" />
+        <div className="rounded-2xl border p-4 lg:col-span-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تنبيهات المخزون</h3>
+          {lowStock.length === 0 ? <EmptyState icon="package" title="المخزون ضمن الحد الطبيعي" /> : (
+            <div className="flex flex-col gap-2">
+              {lowStock.map((i) => (
+                <div key={i.id} className="flex items-center justify-between rounded-xl px-3 py-2.5" style={{ background: "var(--warn-bg)" }}>
+                  <div className="text-sm" style={{ color: "var(--text-body)" }}>{i.name}</div>
+                  <div className="text-xs font-medium" style={{ color: "#A34632" }}>{fmt(i.quantity)} {i.unit} متبقٍ</div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+        <div className="flex items-center justify-between mb-3"><h3 className="font-semibold text-sm" style={{ color: "var(--text-body)" }}>أحدث الفواتير</h3><button onClick={goInvoices} className="text-xs" style={{ color: "var(--accent)" }}>عرض المشتريات</button></div>
+        {recentInvoices.length === 0 ? <EmptyState icon="receipt" title="لا توجد فواتير مسجّلة بعد" /> : (
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {recentInvoices.map((inv) => (
+              <div key={inv.id} className="flex items-center justify-between py-2.5" style={{ borderColor: "var(--divider)" }}>
+                <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{inv.supplierName || inv.type}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{inv.type} · {inv.date}</div></div>
+                <div className="text-sm font-semibold" style={{ color: "var(--text-strong)" }}>{fmt(inv.amount)}</div>
+              </div>
+            ))}
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ---------- Projects ----------
+function Projects({ projects, onOpen, onNew }) {
+  const [query, setQuery] = useState("");
+  const [statusFilter, setStatusFilter] = useState("الكل");
+  const normalizedQuery = normalizeName(query);
+  const filtered = projects.filter((p) => {
+    const workerNames = (p.measurements || []).map((measurement) => measurement.workerName || "");
+    const searchable = [p.customerName, p.location, ...workerNames].map(normalizeName);
+    const matchQ = !normalizedQuery || searchable.some((value) => value.includes(normalizedQuery));
+    const matchS = statusFilter === "الكل" || p.status === statusFilter;
+    return matchQ && matchS;
+  });
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>المشاريع</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>إدارة الزبائن، البضاعة المرسلة، والمكاييل</p></div>
+        <PrimaryButton onClick={onNew}><Icon name="plus" size={16} /> مشروع جديد</PrimaryButton>
+      </div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[180px]">
+          <span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="بحث باسم الزبون أو الموقع أو العامل..." className="w-full rounded-lg border pr-9 pl-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />
+        </div>
+        <div className="flex gap-1.5 flex-wrap">
+          {["الكل", ...STATUSES].map((s) => (
+            <button key={s} onClick={() => setStatusFilter(s)} className="text-xs px-3 py-2 rounded-lg border transition" style={statusFilter === s ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>{s}</button>
+          ))}
+        </div>
+      </div>
+      {filtered.length === 0 ? <EmptyState icon="factory" title="لا توجد مشاريع مطابقة" sub="أضف مشروعًا جديدًا للبدء" /> : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map((p) => {
+            const totalMeasured = (p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0);
+            return (
+              <button key={p.id} onClick={() => onOpen(p.id)} className="text-right rounded-2xl border p-4 hover:shadow-sm transition flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+                <div className="flex items-start justify-between">
+                  <div><div className="font-semibold" style={{ color: "var(--text-strong)" }}>{p.customerName}</div><div className="text-xs flex items-center gap-1 mt-1" style={{ color: "var(--text-muted)" }}><Icon name="mappin" size={11} /> {p.location || "بدون موقع"}</div></div>
+                  <Badge bg={STATUS_COLOR[p.status].bg} fg={STATUS_COLOR[p.status].fg}>{p.status}</Badge>
+                </div>
+                <div className="flex items-center justify-between text-xs pt-2 border-t" style={{ color: "var(--text-muted)", borderColor: "var(--divider)" }}><span>{p.productType}</span><span>{totalMeasured > 0 ? fmt(totalMeasured) + " إجمالي" : p.dateCreated}</span></div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SearchablePicker({ items, value, onSelect, getLabel, getSearchText, placeholder, emptyText = "لا توجد نتائج مطابقة" }) {
+  const [query, setQuery] = useState("");
+  const [open, setOpen] = useState(false);
+  const selected = items.find((item) => item.id === value);
+  const normalizedQuery = normalizeName(query);
+  const filtered = items.filter((item) => !normalizedQuery || normalizeName(getSearchText(item)).includes(normalizedQuery));
+
+  return (
+    <div className="relative">
+      <TextInput
+        value={open ? query : (selected ? getLabel(selected) : "")}
+        placeholder={placeholder}
+        onFocus={() => { setOpen(true); setQuery(""); }}
+        onChange={(e) => { setQuery(e.target.value); setOpen(true); }}
+        onBlur={() => window.setTimeout(() => setOpen(false), 150)}
+      />
+      {open && (
+        <div className="absolute inset-x-0 top-full z-20 mt-1 max-h-56 overflow-y-auto rounded-lg border shadow-lg" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          {filtered.length === 0 ? <div className="px-3 py-2 text-xs" style={{ color: "var(--text-muted)" }}>{emptyText}</div> : filtered.map((item) => (
+            <button key={item.id} type="button" onMouseDown={(e) => e.preventDefault()} onClick={() => { onSelect(item.id); setQuery(""); setOpen(false); }} className="w-full px-3 py-2 text-right text-sm border-b last:border-b-0" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}>
+              {getLabel(item)}
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && <button type="button" onClick={() => { onSelect(null); setQuery(""); setOpen(false); }} className="absolute left-2 top-1/2 -translate-y-1/2 text-xs" style={{ color: "var(--text-muted)" }}>مسح</button>}
+    </div>
+  );
+}
+
+function CustomerPicker({ customers, customerId, customerName, onSelect, onCreateNew }) {
+  const [addingNew, setAddingNew] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+
+  const confirmNew = () => {
+    if (!newName.trim() || hasDuplicateName(customers, newName)) { notify("اسم العميل موجود مسبقًا أو غير صالح."); return; }
+    const c = { id: uid(), name: newName.trim(), phone: newPhone.trim(), notes: "", transactions: [] };
+    onCreateNew(c);
+    setAddingNew(false);
+  };
+
+  return (
+    <div className="flex flex-col gap-2">
+      {!addingNew && <SearchablePicker items={customers} value={customerId} onSelect={onSelect} placeholder="ابحث باسم العميل أو الهاتف..." getLabel={(c) => c.name + (c.phone ? " — " + c.phone : "")} getSearchText={(c) => [c.name, c.phone].filter(Boolean).join(" ")} />}
+      {!addingNew && <button type="button" onClick={() => { setAddingNew(true); setNewName(""); setNewPhone(""); }} className="text-xs self-start" style={{ color: "var(--accent)" }}>+ إضافة عميل جديد</button>}
+      {addingNew && (
+        <div className="rounded-lg border p-2.5 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+          <TextInput placeholder="اسم العميل الجديد" value={newName} onChange={(e) => setNewName(e.target.value)} />
+          <TextInput placeholder="رقم الهاتف (اختياري)" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} />
+          <div className="flex gap-2">
+            <PrimaryButton onClick={confirmNew} disabled={!newName.trim()}><Icon name="plus" size={14} /> إضافة واختيار</PrimaryButton>
+            <GhostButton onClick={() => setAddingNew(false)}>إلغاء</GhostButton>
+          </div>
+        </div>
+      )}
+      {!addingNew && customerName && !customerId && (
+        <div className="text-xs" style={{ color: "var(--text-muted)" }}>هذا المشروع مرتبط باسم قديم غير مسجّل كعميل بعد: «{customerName}» — اختر عميلاً من القائمة أعلاه لربطه.</div>
+      )}
+    </div>
+  );
+}
+
+function NewProjectModal({ onClose, onCreate, customers, upsert }) {
+  const [customerId, setCustomerId] = useState("");
+  const [phone, setPhone] = useState("");
+  const [dateCreated, setDateCreated] = useState(todayISO());
+  const [initialPayment, setInitialPayment] = useState("");
+  const [initialPaymentDate, setInitialPaymentDate] = useState(todayISO());
+  const [initialPaymentNote, setInitialPaymentNote] = useState("");
+  const [location, setLocation] = useState("");
+  const [productType, setProductType] = useState("قهوة");
+  const [notes, setNotes] = useState("");
+  const [createdCustomer, setCreatedCustomer] = useState(null);
+
+  const handleCreateCustomer = (c) => { upsert("customers", c); setCreatedCustomer(c); setCustomerId(c.id); if (!phone) setPhone(c.phone || ""); };
+
+  const submit = () => {
+    const customer = customers.find((c) => c.id === customerId) || createdCustomer;
+    if (!customer) return;
+    if (initialPayment !== "" && !positiveNumber(initialPayment)) { notify("مبلغ الدفعة الأولى يجب أن يكون موجبًا."); return; }
+    if (positiveNumber(initialPayment)) {
+      if (!initialPaymentDate) { notify("اختر تاريخ الدفعة الأولى."); return; }
+      if (!dateCreated) { notify("اختر تاريخ إنشاء المشروع."); return; }
+      if (initialPaymentDate < dateCreated) { notify("لا يمكن أن تسبق الدفعة تاريخ إنشاء المشروع."); return; }
+    }
+    const payment = positiveNumber(initialPayment) ? { id: uid(), date: initialPaymentDate, amount: Number(initialPayment), description: initialPaymentNote.trim() || "دفعة عند إنشاء المشروع" } : null;
+    onCreate({ id: uid(), customerId: customer.id, customerName: customer.name, phone: (phone.trim() || customer.phone || ""), location: location.trim(), productType, status: "جديد", dateCreated, notes: notes.trim(), items: [], measurements: [], payments: payment ? [payment] : [], completedAt: null });
+  };
+  return (
+    <Modal title="مشروع جديد" onClose={onClose}>
+      <div className="flex flex-col gap-3">
+        <div><FieldLabel>العميل</FieldLabel><CustomerPicker customers={customers} customerId={customerId} onSelect={setCustomerId} onCreateNew={handleCreateCustomer} /></div>
+        <div><FieldLabel>رقم هاتف خاص بهذا المشروع (اختياري)</FieldLabel><TextInput value={phone} onChange={(e) => setPhone(e.target.value)} placeholder="اتركه فارغًا لاستخدام هاتف العميل" /></div>
+        <div className="grid grid-cols-2 gap-3"><div><FieldLabel>تاريخ إنشاء المشروع</FieldLabel><TextInput type="date" value={dateCreated} onChange={(e) => setDateCreated(e.target.value)} /></div><div><FieldLabel>تاريخ الدفعة الأولى</FieldLabel><TextInput type="date" value={initialPaymentDate} onChange={(e) => setInitialPaymentDate(e.target.value)} /></div></div>
+        <div><FieldLabel>الواصل من الزبون عند إنشاء المشروع (اختياري)</FieldLabel><TextInput type="number" value={initialPayment} onChange={(e) => setInitialPayment(e.target.value)} placeholder="اتركه فارغًا إذا لم يدفع" /></div>
+        {positiveNumber(initialPayment) && <div><FieldLabel>ملاحظة الدفعة (اختياري)</FieldLabel><TextInput value={initialPaymentNote} onChange={(e) => setInitialPaymentNote(e.target.value)} /></div>}
+        <div><FieldLabel>موقع المشروع</FieldLabel><TextInput value={location} onChange={(e) => setLocation(e.target.value)} placeholder="الحي / المنطقة" /></div>
+        <div><FieldLabel>نوع المنتج المطلوب</FieldLabel><Select value={productType} onChange={(e) => setProductType(e.target.value)}>{PRODUCT_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
+        <div><FieldLabel>ملاحظات (اختياري)</FieldLabel><textarea value={notes} onChange={(e) => setNotes(e.target.value)} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
+        <PrimaryButton onClick={submit} full disabled={!customerId}><Icon name="plus" size={16} /> إنشاء المشروع</PrimaryButton>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------- Project detail ----------
+function printProjectInvoice(project, income = []) {
+  const sm = getProjectSummary(project, income);
+  const rows = (project.measurements || []).flatMap((measurement) => (measurement.entries || []).map((entry) => ({ label: entry.label || "", quantity: Number(entry.quantity || 0), unitPrice: Number(entry.unitPrice || 0), total: Number(entry.total || 0) })));
+  const invoiceNumber = String(project.id || "").replace(/[^0-9]/g, "").slice(-6) || "000001";
+  const rowsHtml = rows.length ? rows.map((row, index) => `<tr><td>${index + 1}</td><td class="item-name">${escapeHtml(row.label)}</td><td>${fmt(row.quantity)}</td><td>${fmt(row.unitPrice)}</td><td class="num">${fmt(row.total)}</td></tr>`).join("") : `<tr><td colspan="5" class="empty-row">لا توجد قياسات نهائية مسجلة</td></tr>`;
+  const statusText = sm.remaining > 0 ? "المتبقي على الزبون" : sm.surplus > 0 ? "رصيد للزبون" : "الحالة";
+  const statusValue = sm.remaining > 0 ? fmt(sm.remaining) : sm.surplus > 0 ? fmt(sm.surplus) : sm.settled ? "خالص" : "بانتظار الكيل";
+  const printWindow = window.open("", "_blank", "width=900,height=1100");
+  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
+  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="UTF-8" /><title>فاتورة - ${escapeHtml(project.customerName)}</title><style>
+    @page{size:A4 portrait;margin:0}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{margin:0;font-family:Arial,Tahoma,sans-serif;color:#1f1b16;font-size:13px;background:#fff}.page{width:210mm;min-height:297mm;padding:0 14mm 18mm;position:relative}.top{height:9mm;background:#7a4423;margin:0 -14mm 8mm}.head{display:flex;justify-content:space-between;gap:14px;align-items:flex-start;border-bottom:2px solid #7a4423;padding-bottom:12px}.brand{display:flex;gap:12px;align-items:center}.logo{width:54px;height:54px;border-radius:14px;background:#7a4423;color:#fff;display:flex;align-items:center;justify-content:center;font-size:26px;font-weight:800}.co-name{font-size:22px;font-weight:800;color:#7a4423}.co-sub{font-size:12px;font-weight:600;color:#6b645b}.addr{font-size:11px;color:#6b645b;margin-top:3px}.meta{border:1px solid #e3dbd0;border-radius:10px;overflow:hidden;min-width:190px}.meta div{display:flex;justify-content:space-between;gap:12px;padding:6px 10px;font-size:12px}.meta div+div{border-top:1px solid #e3dbd0}.meta b{color:#7a4423}.title{text-align:center;margin:14px 0;color:#7a4423;font-size:17px;font-weight:800}.title span{display:inline-block;padding:4px 28px;border:1.5px solid #7a4423;border-radius:30px;background:#f5ece3}.info{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:14px}.cell{border:1px solid #e3dbd0;border-radius:10px;padding:8px 12px;background:#fcfaf7}.row{display:flex;justify-content:space-between;gap:10px;padding:3px 0}.row+.row{border-top:1px dashed #e3dbd0}.k{color:#6b645b;font-size:11.5px}.v{font-weight:700;text-align:left}table{width:100%;border-collapse:separate;border-spacing:0;border:1px solid #e3dbd0;border-radius:10px;overflow:hidden}th{background:#7a4423;color:#fff;padding:9px 6px;font-size:12px}td{padding:8px 6px;text-align:center;border-top:1px solid #e3dbd0}tbody tr:nth-child(even) td{background:#fbf8f4}.item-name{text-align:right;padding-right:12px;font-weight:600}.num{font-weight:800}.empty-row{color:#6b645b;padding:22px}th:nth-child(1){width:8%}th:nth-child(2){width:40%}th:nth-child(3),th:nth-child(4){width:16%}th:nth-child(5){width:20%}.bottom{display:grid;grid-template-columns:1.15fr 1fr;gap:14px;margin-top:14px}.words,.totals{border:1px solid #e3dbd0;border-radius:10px;padding:10px 12px;line-height:1.9}.words b{color:#7a4423}.totals{padding:0;overflow:hidden}.totals .r{display:flex;justify-content:space-between;padding:7px 12px}.totals .r+.r{border-top:1px solid #e3dbd0}.totals .big{background:#7a4423;color:#fff;font-size:16px;font-weight:800}.totals .due{background:#f5ece3;color:#7a4423;font-weight:800}.sign{display:grid;grid-template-columns:1fr 1fr;gap:40px;margin-top:34px;text-align:center;font-size:12px;color:#6b645b}.sign div>div{margin-top:36px;border-top:1px solid #1f1b16;padding-top:5px}.foot{position:absolute;bottom:0;right:0;left:0;text-align:center;padding:6px;background:#f5ece3;color:#7a4423;font-weight:700;font-size:11.5px;border-top:2px solid #7a4423}
+  </style></head><body><main class="page"><div class="top"></div><header class="head"><div class="brand"><div class="logo">ش</div><div><div class="co-name">شركة الشرق الكبرى</div><div class="co-sub">للطلاء الخارجي والعوازل</div><div class="addr">ليبيا - طرابلس - عين زارة - بجانب شيل فرحات</div></div></div><div class="meta"><div><span>رقم الفاتورة</span><b>${invoiceNumber}</b></div><div><span>تاريخ الإصدار</span><b>${todayISO()}</b></div><div><span>تاريخ المشروع</span><b>${escapeHtml(project.dateCreated || "—")}</b></div></div></header><div class="title"><span>فاتورة القياس النهائي</span></div><section class="info"><div class="cell"><div class="row"><span class="k">الزبون</span><span class="v">${escapeHtml(project.customerName || "غير محدد")}</span></div><div class="row"><span class="k">الهاتف</span><span class="v" dir="ltr">${escapeHtml(project.phone || "غير محدد")}</span></div></div><div class="cell"><div class="row"><span class="k">العنوان</span><span class="v">${escapeHtml(project.location || "غير محدد")}</span></div><div class="row"><span class="k">نوع المنتج</span><span class="v">${escapeHtml(project.productType || "غير محدد")}</span></div></div></section><table><thead><tr><th>#</th><th>البند</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${rowsHtml}</tbody></table><section class="bottom"><div class="words"><div><b>الإجمالي كتابةً:</b> ${escapeHtml(numberToArabicWords(Math.max(0, sm.cost - sm.waived)))} دينار ليبي فقط لا غير</div><div><b>الحالة:</b> ${statusText} — ${statusValue}</div>${sm.waived > 0 ? `<div><b>المبلغ المتغاضى عنه:</b> ${fmt(sm.waived)}</div>` : ""}<div><b>ملاحظات:</b> ${escapeHtml(project.notes || "لا توجد ملاحظات")}</div></div><div class="totals"><div class="r big"><span>الإجمالي</span><span>${fmt(Math.max(0, sm.cost - sm.waived))}</span></div><div class="r"><span>الواصل</span><span>${fmt(sm.paid)}</span></div><div class="r due"><span>${statusText}</span><span>${statusValue}</span></div></div></section><div class="sign"><div>إعداد<div>التوقيع</div></div><div>اعتماد<div>التوقيع</div></div></div></main><footer class="foot">شركة الشرق الكبرى — شكرًا لتعاملكم معنا</footer></body></html>`;
+  printWindow.document.open(); printWindow.document.write(printHtml); printWindow.document.close();
+  let printed = false;
+  const triggerPrint = () => { if (printed) return; printed = true; try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Print failed:", error); } };
+  printWindow.onload = triggerPrint;
+  window.setTimeout(triggerPrint, 700);
+}
+
+function WaiveInline({ remaining, waived, onApply, onReset }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  if (remaining <= 0 && waived <= 0) return null;
+  const apply = () => {
+    if (!positiveNumber(amount) || Number(amount) > remaining) { notify("أدخل مبلغًا موجبًا لا يتجاوز الباقي."); return; }
+    onApply(Number(amount), note.trim());
+    setAmount(""); setNote("");
+  };
+  return <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>التغاضي عن جزء من المبلغ</div>{remaining > 0 && <><div className="flex gap-2"><TextInput type="number" placeholder={`المبلغ (الباقي ${fmt(remaining)})`} value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput placeholder="سبب (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} /></div><div className="flex gap-2 flex-wrap"><GhostButton onClick={apply}>تغاضي عن المبلغ</GhostButton><GhostButton onClick={() => setAmount(String(remaining))}>كامل الباقي</GhostButton></div></>}{waived > 0 && <div className="flex items-center justify-between text-xs" style={{ color: "var(--text-muted)" }}><span>إجمالي المتغاضى عنه: {fmt(waived)}</span><button onClick={onReset} style={{ color: "#A34632" }}>إلغاء التغاضي</button></div>}</div>;
+}
+
+function ProjectDetail({ project, onClose, onSave, onDelete, onAddPayment, customers, upsertCustomer, income = [] }) {
+  const [sub, setSub] = useState("info");
+  const [local, setLocal] = useState(project);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  useEffect(() => setLocal(project), [project.id]);
+  const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
+  const sm = getProjectSummary(local, income);
+  const projectPayments = getProjectPayments(local, income);
+  const addPayment = (payment) => {
+    const next = { ...local, payments: [payment, ...(local.payments || [])] };
+    setLocal(next);
+    onAddPayment(next, payment);
+  };
+  const waive = (amount, note) => update({ waivedAmount: Math.min(sm.cost, Number(local.waivedAmount || 0) + amount), waiveNote: note || local.waiveNote || "" });
+  const projectStatusLabel = sm.remaining > 0 ? "الباقي" : sm.surplus > 0 ? "رصيد للزبون" : sm.advance > 0 ? "مقدّم زائد" : "الحالة";
+  const projectStatusValue = sm.remaining > 0 ? fmt(sm.remaining) : sm.surplus > 0 ? fmt(sm.surplus) : sm.advance > 0 ? fmt(sm.advance) : sm.settled ? "خالص" : "بانتظار الكيل";
+  const projectStatusColor = sm.remaining > 0 ? "#A34632" : "#4B6350";
+  const projectStatusBg = sm.remaining > 0 ? "var(--warn-bg)" : "var(--good-bg)";
+
+  return (
+    <Modal title={`مشروع — ${local.customerName}`} onClose={onClose} wide>
+      <div className="flex items-center gap-1.5 mb-4 flex-wrap">
+        {[{ k: "info", l: "المعلومات", icon: "user" }, { k: "items", l: "المنتجات المرسلة", icon: "truck" }, { k: "measure", l: "المكاييل", icon: "ruler" }].map((t) => (
+          <button key={t.k} onClick={() => setSub(t.k)} className="text-xs px-3 py-2 rounded-lg border flex items-center gap-1.5 transition" style={sub === t.k ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>
+            <Icon name={t.icon} size={13} /> {t.l}
+          </button>
+        ))}
+      </div>
+
+      {sub === "info" && (
+        <div className="flex flex-col gap-3">
+          <div>
+            <FieldLabel>العميل</FieldLabel>
+            <CustomerPicker customers={customers} customerId={local.customerId} customerName={local.customerName}
+              onSelect={(id) => { const c = customers.find((x) => x.id === id); update({ customerId: id, customerName: c ? c.name : local.customerName }); }}
+              onCreateNew={(c) => { upsertCustomer(c); update({ customerId: c.id, customerName: c.name }); }} />
+          </div>
+          <div className="grid sm:grid-cols-2 gap-3">
+            <div><FieldLabel>رقم الهاتف لهذا المشروع</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
+            <div><FieldLabel>الموقع</FieldLabel><TextInput value={local.location} onChange={(e) => update({ location: e.target.value })} /></div>
+            <div><FieldLabel>نوع المنتج</FieldLabel><Select value={local.productType} onChange={(e) => update({ productType: e.target.value })}>{PRODUCT_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
+            <div><FieldLabel>تاريخ الإنشاء</FieldLabel><TextInput type="date" value={local.dateCreated || ""} onChange={(e) => update({ dateCreated: e.target.value })} /></div>
+          </div>
+          <div>
+            <FieldLabel>الحالة</FieldLabel>
+            <Select value={local.status} onChange={(e) => update({ status: e.target.value, completedAt: e.target.value === "مكتمل" ? (local.completedAt || todayISO()) : null })}>{STATUSES.map((s) => <option key={s}>{s}</option>)}</Select>
+            <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>تتحدّث هذه الحالة تلقائيًا: «قيد التنفيذ» عند أول حركة بضاعة، و«مكتمل» عند أول كيل — ويمكنك تعديلها يدويًا عند الحاجة.</div>
+          </div>
+          <div><FieldLabel>ملاحظات</FieldLabel><textarea value={local.notes} onChange={(e) => update({ notes: e.target.value })} rows={2} className="w-full rounded-lg border px-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} /></div>
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-sm mt-1">
+            <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>التكلفة الإجمالية</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(sm.cost)}</div></div>
+            <div className="rounded-xl p-3" style={{ background: "var(--good-bg)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>الواصل</div><div className="font-bold mt-1" style={{ color: "#4B6350" }}>{fmt(sm.paid)}</div></div>
+            {sm.waived > 0 && <div className="rounded-xl p-3" style={{ background: "var(--divider)" }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>متغاضى عنه</div><div className="font-bold mt-1" style={{ color: "var(--text-strong)" }}>{fmt(sm.waived)}</div></div>}
+            <div className="rounded-xl p-3" style={{ background: projectStatusBg }}><div className="text-xs" style={{ color: "var(--text-muted)" }}>{projectStatusLabel}</div><div className="font-bold mt-1" style={{ color: projectStatusColor }}>{projectStatusValue}</div></div>
+          </div>
+          <div className="flex gap-2">
+            <GhostButton onClick={() => printProjectInvoice(local, income)}><Icon name="download" size={14} /> طباعة فاتورة القياس</GhostButton>
+          </div>
+          {local.status !== "مكتمل" && <PrimaryButton full onClick={() => update({ status: "مكتمل", completedAt: todayISO() })}><Icon name="check" size={16} /> إنهاء المشروع يدويًا</PrimaryButton>}
+          <RecordIncomeInline project={local} onAdd={addPayment} />
+          <WaiveInline remaining={sm.remaining} waived={sm.waived} onApply={waive} onReset={() => update({ waivedAmount: 0, waiveNote: "" })} />
+          <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
+            {confirmDelete ? <ConfirmInline label="حذف المشروع نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف المشروع</button>}
+          </div>
+        </div>
+      )}
+      {sub === "items" && <ProjectItems project={local} update={update} />}
+      {sub === "measure" && <ProjectMeasurements project={local} update={update} />}
+    </Modal>
+  );
+}
+
+function RecordIncomeInline({ project, onAdd }) {
+  const [amount, setAmount] = useState("");
+  const [note, setNote] = useState("");
+  const submit = () => {
+    if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
+    onAdd({ id: uid(), date: todayISO(), amount: Number(amount), description: note.trim() || "دفعة من الزبون" });
+    setAmount(""); setNote("");
+  };
+  return (
+    <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+      <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--text-body)" }}><Icon name="wallet" size={14} /> تسجيل وارد من الزبون</div>
+      <div className="flex gap-2"><TextInput type="number" placeholder="المبلغ المستلم" value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput placeholder="ملاحظة (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} /></div>
+      <GhostButton onClick={submit}><Icon name="plus" size={14} /> إضافة الدفعة</GhostButton>
+    </div>
+  );
+}
+
+function ProjectItems({ project, update }) {
+  const [direction, setDirection] = useState("إرسال");
+  const [name, setName] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [unit, setUnit] = useState("كيس");
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const items = project.items || [];
+  const addItem = () => {
+    if (!name.trim() || !positiveNumber(quantity)) { notify("أدخل كمية موجبة."); return; }
+    const entry = { id: uid(), date: todayISO(), direction, name: name.trim(), quantity: Number(quantity), unit };
+    const patch = { items: [entry, ...items] };
+    if (project.status === "جديد") patch.status = "قيد التنفيذ";
+    update(patch);
+    setName(""); setQuantity("");
+  };
+  const removeItem = (id) => { update({ items: items.filter((i) => i.id !== id) }); setPendingDelete(null); };
+  const DIR_ICON = { "إرسال": { icon: "truck", fg: "#4B6350" }, "مرتجع": { icon: "rotate", fg: "#A34632" }, "إضافة": { icon: "plus", fg: "#8A6A32" } };
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+        <div className="grid grid-cols-3 gap-2">
+          <Select value={direction} onChange={(e) => setDirection(e.target.value)}><option value="إرسال">إرسال</option><option value="مرتجع">مرتجع</option><option value="إضافة">إضافة</option></Select>
+          <TextInput list="item-suggestions" placeholder="اسم المادة" value={name} onChange={(e) => setName(e.target.value)} />
+          <Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>لتر</option><option>م</option><option>قطعة</option></Select>
+        </div>
+        <datalist id="item-suggestions">{ITEM_SUGGESTIONS.map((s) => <option key={s} value={s} />)}</datalist>
+        <div className="flex gap-2"><TextInput type="number" placeholder="الكمية" value={quantity} onChange={(e) => setQuantity(e.target.value)} /><PrimaryButton onClick={addItem}><Icon name="plus" size={16} /> تسجيل</PrimaryButton></div>
+      </div>
+      {items.length === 0 ? <EmptyState icon="truck" title="لا توجد حركات بضاعة مسجّلة" /> : (
+        <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+          {items.map((i) => {
+            const D = DIR_ICON[i.direction] || DIR_ICON["إرسال"];
+            return (
+              <div key={i.id} className="flex items-center justify-between py-2.5 gap-2" style={{ borderColor: "var(--divider)" }}>
+                <div className="flex items-center gap-2 min-w-0"><Icon name={D.icon} size={14} color={D.fg} /><div className="min-w-0"><div className="text-sm truncate" style={{ color: "var(--text-body)" }}>{i.name}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{i.direction} · {i.date}</div></div></div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{fmt(i.quantity)} {i.unit}</span>
+                  {pendingDelete === i.id ? <ConfirmInline onConfirm={() => removeItem(i.id)} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(i.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function ProjectMeasurements({ project, update }) {
+  const [workerName, setWorkerName] = useState("");
+  const [entries, setEntries] = useState([{ label: "صنف", quantity: "", unitPrice: "", total: "" }]);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const measurements = project.measurements || [];
+  const setEntry = (idx, patch) => setEntries((prev) => prev.map((e, i) => { if (i !== idx) return e; const next = { ...e, ...patch }; if (next.quantity && next.unitPrice) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
+  const addRow = () => setEntries((prev) => [...prev, { label: "", quantity: "", unitPrice: "", total: "" }]);
+  const removeRow = (idx) => setEntries((prev) => prev.filter((_, i) => i !== idx));
+  const sum = entries.reduce((s, e) => s + Number(e.total || 0), 0);
+  const submit = () => {
+    if (!workerName.trim()) { notify("أدخل اسم العامل."); return; }
+    const cleanEntries = entries.filter((e) => e.label.trim() && positiveNumber(e.total) && nonNegativeNumber(e.quantity || 0) && nonNegativeNumber(e.unitPrice || 0)).map((e) => ({ ...e, quantity: Number(e.quantity || 0), unitPrice: Number(e.unitPrice || 0), total: Number(e.total) }));
+    if (cleanEntries.length === 0) { notify("أدخل بنود قياس صحيحة وبقيم غير سالبة."); return; }
+    const record = { id: uid(), date: todayISO(), workerName: workerName.trim(), entries: cleanEntries, totalAmount: cleanEntries.reduce((s, e) => s + e.total, 0) };
+    const patch = { measurements: [record, ...measurements] };
+    if (project.status !== "مكتمل") { patch.status = "مكتمل"; patch.completedAt = project.completedAt || todayISO(); }
+    update(patch);
+    setWorkerName(""); setEntries([{ label: "صنف", quantity: "", unitPrice: "", total: "" }]);
+  };
+  const removeMeasurement = (id) => { update({ measurements: measurements.filter((m) => m.id !== id) }); setPendingDelete(null); };
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
+        <div><FieldLabel>اسم العامل (الذي كال العمل)</FieldLabel><TextInput value={workerName} onChange={(e) => setWorkerName(e.target.value)} placeholder="اسم العامل" /></div>
+        <div className="flex flex-col gap-2">
+          {entries.map((e, idx) => (
+            <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
+              <div className="col-span-2 sm:col-span-3 min-w-0"><TextInput list="measure-suggestions" placeholder="البند" value={e.label} onChange={(ev) => setEntry(idx, { label: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-3 min-w-0"><TextInput type="number" placeholder="الكمية (م)" value={e.quantity} onChange={(ev) => setEntry(idx, { quantity: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-3 min-w-0"><TextInput type="number" placeholder="سعر الوحدة" value={e.unitPrice} onChange={(ev) => setEntry(idx, { unitPrice: ev.target.value })} /></div>
+              <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="المجموع" value={e.total} onChange={(ev) => setEntry(idx, { total: ev.target.value })} /></div>
+              <div className="col-span-2 sm:col-span-1 flex justify-center">{entries.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
+            </div>
+          ))}
+          <datalist id="measure-suggestions">{["بن أخضر", "بن محمص", "تعبئة", "عبوات"].map((s) => <option key={s} value={s} />)}</datalist>
+          <button onClick={addRow} className="text-xs flex items-center gap-1 self-start" style={{ color: "var(--accent)" }}><Icon name="plus" size={12} /> إضافة بند</button>
+        </div>
+        <div className="flex items-center justify-between border-t pt-2" style={{ borderColor: "var(--divider)" }}><span className="text-sm" style={{ color: "var(--text-muted)" }}>مجموع هذا الكيل</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(sum)}</span></div>
+        <PrimaryButton onClick={submit} full><Icon name="plus" size={16} /> حفظ الكيل</PrimaryButton>
+      </div>
+      {measurements.length === 0 ? <EmptyState icon="ruler" title="لا توجد مكاييل مسجّلة بعد" /> : (
+        <div className="flex flex-col gap-2">
+          {measurements.map((m) => (
+            <div key={m.id} className="rounded-xl border p-3" style={{ borderColor: "var(--card-border)" }}>
+              <div className="flex items-center justify-between mb-2">
+                <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--text-body)" }}><Icon name="user" size={13} /> {m.workerName}<span style={{ color: "var(--text-muted)" }}>·</span><span className="font-normal flex items-center gap-1" style={{ color: "var(--text-muted)" }}><Icon name="calendar" size={11} /> {m.date}</span></div>
+                {pendingDelete === m.id ? <ConfirmInline onConfirm={() => removeMeasurement(m.id)} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(m.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+              </div>
+              <div className="flex flex-col gap-1">{m.entries.map((e, i) => <div key={i} className="flex items-center justify-between text-xs" style={{ color: "var(--text-muted)" }}><span>{e.label} {e.quantity ? `(${fmt(e.quantity)} × ${fmt(e.unitPrice)})` : ""}</span><span className="font-medium" style={{ color: "var(--text-body)" }}>{fmt(e.total)}</span></div>)}</div>
+              <div className="flex items-center justify-between border-t mt-2 pt-2 text-sm" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-muted)" }}>المجموع</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(m.totalAmount)}</span></div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Invoices (with line items) ----------
+function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury, upsert, remove }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingInvoice, setEditingInvoice] = useState(null);
+  const [contactQuery, setContactQuery] = useState("");
+  const [invoiceNumberQuery, setInvoiceNumberQuery] = useState("");
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const [expanded, setExpanded] = useState(null);
+
+  const normalizedContactQuery = normalizeName(contactQuery);
+  const normalizedInvoiceNumberQuery = normalizeName(invoiceNumberQuery);
+  const filtered = invoices.filter((i) => {
+    const matchContact = !normalizedContactQuery || normalizeName(i.contactName || i.supplierName || i.customerName).includes(normalizedContactQuery);
+    const matchInvoiceNumber = !normalizedInvoiceNumberQuery || normalizeName(i.invoiceNumber).includes(normalizedInvoiceNumberQuery);
+    return matchContact && matchInvoiceNumber && (i.direction || (mode === "purchase" ? "purchase" : "sale")) === mode;
+  });
+  const total = filtered.reduce((s, i) => s + Number(i.amount || 0), 0);
+  const sorted = [...filtered].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const deleteInvoice = (invoice) => {
+    remove("invoices", invoice.id);
+    (invoice.items || []).forEach((line) => {
+      const item = inventory.find((entry) => entry.id === line.inventoryId);
+      const delta = mode === "purchase" ? -Number(line.quantity || 0) : Number(line.quantity || 0);
+      if (item) {
+        upsert("inventory", { ...item, quantity: Math.max(0, Number(item.quantity || 0) + delta) });
+        upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice-delete", invoiceId: invoice.id, note: "عكس حذف الفاتورة" });
+      }
+    });
+    const currentTreasury = treasury?.[0];
+    if (currentTreasury) upsert("treasury", { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id) });
+    const supplier = suppliers.find((item) => item.id === invoice.supplierId);
+    if (supplier) upsert("suppliers", { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) });
+    const customer = customers.find((item) => item.id === invoice.customerId);
+    if (customer) upsert("customers", { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) });
+  };
+  const syncSupplierDebt = (supplierId, transactionId, transaction) => {
+    if (!supplierId || !transactionId) return;
+    const supplier = suppliers.find((s) => s.id === supplierId);
+    if (supplier) upsert("suppliers", upsertSupplierDebt(supplier, transaction));
+  };
+  const saveInvoice = (invoice) => {
+    const previous = editingInvoice;
+    const previousItems = previous?.items || [];
+    const nextItems = invoice.items || [];
+    const stockChanges = new Map();
+    previousItems.forEach((item) => stockChanges.set(normalizeName(item.name), (stockChanges.get(normalizeName(item.name)) || 0) - Number(item.quantity || 0) * (mode === "purchase" ? 1 : -1)));
+    nextItems.forEach((item) => stockChanges.set(normalizeName(item.name), (stockChanges.get(normalizeName(item.name)) || 0) + Number(item.quantity || 0) * (mode === "purchase" ? 1 : -1)));
+    for (const item of inventory) {
+      const delta = stockChanges.get(normalizeName(item.name)) || 0;
+      if (delta) upsert("inventory", { ...item, quantity: Number(item.quantity || 0) + delta });
+      if (delta) upsert("inventoryMovements", { id: uid(), date: invoice.date, itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice", invoiceId: invoice.id, note: mode === "purchase" ? "فاتورة شراء" : "فاتورة بيع" });
+    }
+    const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+    const treasuryTransaction = { id: uid(), date: invoice.date, direction: mode === "purchase" ? "out" : "in", amount: Number(invoice.amount), source: "invoice", invoiceId: invoice.id, note: mode === "purchase" ? "دفع فاتورة شراء" : "قبض فاتورة بيع" };
+    upsert("treasury", { ...currentTreasury, transactions: [treasuryTransaction, ...(currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id)] });
+    if (mode === "sale" && invoice.contactId) {
+      const customerIds = [...new Set([previous?.contactId, invoice.contactId].filter(Boolean))];
+      customerIds.forEach((customerId) => {
+        const customer = customers.find((item) => item.id === customerId);
+        if (!customer) return;
+        const isLegacyInvoiceMovement = (transaction) => previous && transaction.date === previous.date && Number(transaction.amount) === Number(previous.amount) && String(transaction.note || "").includes("فاتورة بيع");
+        const remaining = (customer.transactions || []).filter((transaction) => transaction.invoiceId !== invoice.id && transaction.id !== invoice.contactTransactionId && !isLegacyInvoiceMovement(transaction));
+        const nextTransactions = customerId === invoice.contactId ? [{ id: invoice.contactTransactionId, invoiceId: invoice.id, date: invoice.date, type: invoice.paymentStatus === "unpaid" ? "debit" : "info", amount: Number(invoice.amount), note: invoice.paymentStatus === "unpaid" ? "فاتورة بيع غير مسددة" : "فاتورة بيع مسددة" }, ...remaining] : remaining;
+        upsert("customers", { ...customer, transactions: nextTransactions });
+      });
+    }
+    upsert("invoices", invoice);
+    if (mode === "purchase") {
+      const supplierIds = [...new Set([previous?.contactId || previous?.supplierId, invoice.contactId].filter(Boolean))];
+      supplierIds.forEach((supplierId) => {
+        const supplier = suppliers.find((item) => item.id === supplierId);
+        if (!supplier) return;
+        const remaining = (supplier.transactions || []).filter((transaction) => transaction.invoiceId !== invoice.id && transaction.id !== previous?.debtTransactionId && transaction.id !== invoice.debtTransactionId);
+        if (supplierId === invoice.contactId) remaining.unshift({ id: invoice.debtTransactionId || invoice.contactTransactionId, invoiceId: invoice.id, date: invoice.date, type: invoice.paymentStatus === "unpaid" ? "debit" : "info", amount: invoice.amount, note: invoice.paymentStatus === "unpaid" ? "فاتورة شراء غير مسددة" : "فاتورة شراء مسددة" });
+        upsert("suppliers", { ...supplier, transactions: remaining });
+      });
+    }
+    setEditingInvoice(null);
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>{mode === "purchase" ? "فواتير المشتريات" : "فواتير المبيعات"}</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>{mode === "purchase" ? "فواتير الموردين والبنود الداخلة إلى المخزن" : "فواتير العملاء والبنود الخارجة من المخزن"}</p></div>
+        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> فاتورة {mode === "purchase" ? "شراء" : "بيع"}</PrimaryButton>
+      </div>
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative min-w-[180px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span><TextInput value={contactQuery} onChange={(e) => setContactQuery(e.target.value)} placeholder={`بحث باسم ${mode === "purchase" ? "المورد" : "العميل"}...`} className="pr-9" /></div>
+        <div className="relative min-w-[150px] flex-1"><span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}>#</span><TextInput value={invoiceNumberQuery} onChange={(e) => setInvoiceNumberQuery(e.target.value)} placeholder="بحث برقم الفاتورة..." className="pr-8" /></div>
+        <div className="mr-auto rounded-lg px-4 py-2 text-sm" style={{ background: "var(--divider)" }}><span className="ml-1" style={{ color: "var(--text-muted)" }}>الإجمالي:</span><span className="font-bold" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span></div>
+      </div>
+      {sorted.length === 0 ? <EmptyState icon="receipt" title="لا توجد فواتير" sub="أضف أول فاتورة لتبدأ" /> : (
+        <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {sorted.map((inv) => (
+              <div key={inv.id} style={{ borderColor: "var(--divider)" }}>
+                <button onClick={() => setExpanded(expanded === inv.id ? null : inv.id)} className="w-full flex items-center justify-between px-4 py-3 gap-2 text-right">
+                  <div className="min-w-0">
+                    <div className="text-sm font-medium truncate flex items-center gap-1.5" style={{ color: "var(--text-body)" }}>
+                      {inv.contactName || inv.supplierName || inv.customerName || "بدون اسم"} {inv.invoiceNumber && <span className="text-xs font-normal" style={{ color: "var(--text-muted)" }}>#{inv.invoiceNumber}</span>}
+                    </div>
+                    <div className="text-xs flex items-center gap-1.5 mt-0.5 flex-wrap" style={{ color: "var(--text-muted)" }}>
+                      {inv.date}
+                      {(inv.items || []).length > 0 && <span>· {inv.items.length} بند</span>}
+                    </div>
+                  </div>
+                  <span className="font-semibold shrink-0" style={{ color: "var(--text-strong)" }}>{fmt(inv.amount)}</span>
+                </button>
+                {expanded === inv.id && (
+                  <div className="px-4 pb-3 flex flex-col gap-2">
+                    {inv.description && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{inv.description}</div>}
+                    {(inv.items || []).length > 0 && (
+                      <div className="rounded-lg p-2.5 flex flex-col gap-1" style={{ background: "var(--divider)" }}>
+                        {inv.items.map((it, idx) => (
+                          <div key={idx} className="flex items-center justify-between text-xs" style={{ color: "var(--text-body)" }}>
+                            <span>{it.name} {it.quantity ? `(${fmt(it.quantity)} ${it.unit || ""} × ${fmt(it.unitPrice)})` : ""}</span>
+                            <span className="font-medium">{fmt(it.total)}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="flex justify-end">
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {showAdd && <Modal title={`فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} onAdd={(inv) => { saveInvoice(inv); setShowAdd(false); }} /></Modal>}
+      {editingInvoice && <Modal title="تعديل الفاتورة" onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} contacts={mode === "purchase" ? suppliers : customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
+    </div>
+  );
+}
+
+function InvoiceContactPicker({ mode, contacts, contactId, contactName, onSelect, onCreate }) {
+  const [adding, setAdding] = useState(false);
+  const [newName, setNewName] = useState("");
+  const [newPhone, setNewPhone] = useState("");
+  const label = mode === "purchase" ? "المورد" : "العميل";
+  const addContact = () => {
+    if (!newName.trim()) { notify(`أدخل اسم ${label}.`); return; }
+    if (hasDuplicateName(contacts, newName)) { notify(`اسم ${label} موجود مسبقًا.`); return; }
+    const contact = { id: uid(), name: newName.trim(), phone: newPhone.trim(), notes: "", transactions: [] };
+    onCreate(contact);
+    setAdding(false); setNewName(""); setNewPhone("");
+  };
+  return <div className="flex flex-col gap-2">
+    {!adding && <SearchablePicker items={contacts} value={contactId} onSelect={onSelect} placeholder={`ابحث باسم ${label} أو الهاتف...`} getLabel={(item) => item.name + (item.phone ? " — " + item.phone : "")} getSearchText={(item) => [item.name, item.phone].filter(Boolean).join(" ")} />}
+    {!adding && <button type="button" onClick={() => setAdding(true)} className="text-xs self-start" style={{ color: "var(--accent)" }}>+ إضافة {label} جديد</button>}
+    {adding && <div className="rounded-lg border p-2.5 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}><TextInput placeholder={`اسم ${label} الجديد`} value={newName} onChange={(e) => setNewName(e.target.value)} /><TextInput placeholder="رقم الهاتف (اختياري)" value={newPhone} onChange={(e) => setNewPhone(e.target.value)} /><div className="flex gap-2"><PrimaryButton onClick={addContact}><Icon name="plus" size={14} /> إضافة واختيار</PrimaryButton><GhostButton onClick={() => setAdding(false)}>إلغاء</GhostButton></div></div>}
+    {!adding && contactName && !contactId && <div className="text-xs" style={{ color: "var(--text-muted)" }}>الاسم الحالي غير مرتبط ببطاقة، اختر جهة من البحث.</div>}
+  </div>;
+}
+
+function AddInvoiceForm({ onAdd, mode, inventory, contacts, suppliers, upsert, initialInvoice = null }) {
+  const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoiceNumber || "");
+  const [contactId, setContactId] = useState(initialInvoice?.contactId || initialInvoice?.supplierId || "");
+  const [contactName, setContactName] = useState(initialInvoice?.contactName || initialInvoice?.supplierName || initialInvoice?.customerName || "");
+  const [amount, setAmount] = useState(initialInvoice?.amount ? String(initialInvoice.amount) : "");
+  const [date, setDate] = useState(initialInvoice?.date || todayISO());
+  const [description, setDescription] = useState(initialInvoice?.description || "");
+  const [paymentStatus, setPaymentStatus] = useState(initialInvoice?.paymentStatus || (initialInvoice?.debtTransactionId ? "unpaid" : "paid"));
+  const [items, setItems] = useState(initialInvoice?.items?.length ? initialInvoice.items : [{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
+
+  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(Number(next.quantity) * Number(next.unitPrice)); return next; }));
+  const addRow = () => setItems((prev) => [...prev, { inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
+  const removeRow = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
+  const itemsTotal = items.reduce((s, it) => s + Number(it.total || 0), 0);
+  const effectiveAmount = itemsTotal > 0 ? itemsTotal : Number(amount || 0);
+
+  useEffect(() => {
+    const contact = contacts.find((item) => item.id === contactId);
+    if (contact) setContactName(contact.name);
+  }, [contactId, contacts]);
+
+  const submit = () => {
+    if (!positiveNumber(effectiveAmount) || Number(effectiveAmount) < 0) { notify("مبلغ الفاتورة يجب أن يكون موجبًا."); return; }
+    if (!contactId) { notify(`اختر ${mode === "purchase" ? "المورد" : "العميل"} أولًا.`); return; }
+    const cleanItems = items.filter((it) => it.inventoryId && positiveNumber(it.quantity) && positiveNumber(it.total)).map((it) => ({ inventoryId: it.inventoryId, name: it.name.trim(), quantity: Number(it.quantity), unit: it.unit, unitPrice: Number(it.unitPrice || 0), total: Number(it.total) }));
+    if (!cleanItems.length) { notify("اختر صنفًا من المخزن وأدخل كمية وسعرًا صحيحين."); return; }
+    const stockById = new Map(inventory.map((item) => [item.id, item]));
+    if (mode === "sale") {
+      const requested = new Map();
+      cleanItems.forEach((item) => requested.set(item.inventoryId, (requested.get(item.inventoryId) || 0) + item.quantity));
+      for (const [id, quantity] of requested) if (!stockById.has(id) || Number(stockById.get(id).quantity || 0) + (initialInvoice?.items || []).filter((item) => item.inventoryId === id).reduce((sum, item) => sum + Number(item.quantity || 0), 0) < quantity) { notify(`الكمية المطلوبة من «${stockById.get(id)?.name || "الصنف"}» غير متوفرة في المخزن.`); return; }
+    }
+    const invoiceId = initialInvoice?.id || uid();
+    const debtTransactionId = paymentStatus === "unpaid" && contactId ? (initialInvoice?.debtTransactionId || "invoice-debt-" + invoiceId) : null;
+    const inv = {
+      id: invoiceId, invoiceNumber: invoiceNumber.trim(), type: mode === "purchase" ? "شراء" : "بيع", direction: mode, contactId: contactId || null, contactName: contactName.trim(),
+      supplierId: mode === "purchase" ? (contactId || null) : null, supplierName: mode === "purchase" ? contactName.trim() : "", customerId: mode === "sale" ? (contactId || null) : null, customerName: mode === "sale" ? contactName.trim() : "",
+      amount: effectiveAmount, date, description: description.trim(), items: cleanItems, paymentStatus, debtTransactionId, contactTransactionId: initialInvoice?.contactTransactionId || "invoice-contact-" + invoiceId,
+    };
+    onAdd(inv);
+  };
+
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <FieldLabel>رقم الفاتورة (اختياري)</FieldLabel><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
+      </div>
+      <div><FieldLabel>{mode === "purchase" ? "المورد" : "العميل"}</FieldLabel><InvoiceContactPicker mode={mode} contacts={contacts} contactId={contactId} contactName={contactName} onSelect={(id) => { const contact = contacts.find((item) => item.id === id); setContactId(id || ""); setContactName(contact?.name || ""); }} onCreate={(contact) => { upsert(mode === "purchase" ? "suppliers" : "customers", contact); setContactId(contact.id); setContactName(contact.name); }} /></div>
+      <div className="flex items-center gap-3 text-xs" style={{ color: "var(--text-body)" }}>
+        <span>حالة السداد:</span>
+        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" value="paid" checked={paymentStatus === "paid"} onChange={() => setPaymentStatus("paid")} /> مسددة</label>
+        <label className="flex items-center gap-1"><input type="radio" name="invoice-payment-status" value="unpaid" checked={paymentStatus === "unpaid"} onChange={() => setPaymentStatus("unpaid")} /> غير مسددة</label>
+      </div>
+
+      <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+          <FieldLabel>بنود الفاتورة من المخزن</FieldLabel>
+        {items.map((it, idx) => (
+          <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
+            <div className="col-span-2 sm:col-span-3 min-w-0"><Select value={it.inventoryId} onChange={(e) => { const item = inventory.find((entry) => entry.id === e.target.value); setItem(idx, { inventoryId: e.target.value, name: item?.name || "", unit: item?.unit || "كيس" }); }}><option value="">اختر من المخزن</option>{inventory.map((item) => <option key={item.id} value={item.id}>{item.name} ({fmt(item.quantity)} {item.unit})</option>)}</Select></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="كمية" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput placeholder="وحدة" value={it.unit} onChange={(e) => setItem(idx, { unit: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="السعر" value={it.unitPrice} onChange={(e) => setItem(idx, { unitPrice: e.target.value })} /></div>
+            <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="الإجمالي" value={it.total} onChange={(e) => setItem(idx, { total: e.target.value })} /></div>
+            <div className="col-span-2 sm:col-span-1 flex justify-center">{items.length > 1 && <button onClick={() => removeRow(idx)} style={{ color: "var(--text-muted)" }}><Icon name="x" size={14} /></button>}</div>
+          </div>
+        ))}
+        <button onClick={addRow} className="text-xs flex items-center gap-1 self-start" style={{ color: "var(--accent)" }}><Icon name="plus" size={12} /> إضافة بند</button>
+      </div>
+
+      <div className="grid grid-cols-2 gap-3">
+        <div><FieldLabel>{itemsTotal > 0 ? "المبلغ الإجمالي (محسوب من البنود)" : "المبلغ الإجمالي"}</FieldLabel><TextInput type="number" value={itemsTotal > 0 ? itemsTotal : amount} onChange={(e) => setAmount(e.target.value)} disabled={itemsTotal > 0} /></div>
+        <div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+      </div>
+      <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!effectiveAmount}><Icon name="plus" size={16} /> {initialInvoice ? "حفظ تعديل الفاتورة" : "حفظ الفاتورة"}</PrimaryButton>
+    </div>
+  );
+}
+
+// ---------- Finance ----------
+function FinanceTab({ expenses, income, projects, upsert, remove }) {
+  const [sub, setSub] = useState("expenses");
+  const [showAdd, setShowAdd] = useState(false);
+  const [editingExpense, setEditingExpense] = useState(null);
+  const [editingIncome, setEditingIncome] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const list = sub === "expenses" ? expenses : income;
+  const sorted = [...list].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const totalExpenses = expenses.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const totalIncome = income.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const saveIncome = (nextIncome) => {
+    const previousProjectId = editingIncome?.projectId;
+    if (previousProjectId && previousProjectId !== nextIncome.projectId) {
+      const previousProject = projects.find((project) => project.id === previousProjectId);
+      if (previousProject) upsert("projects", { ...previousProject, payments: (previousProject.payments || []).filter((payment) => (payment.paymentId || payment.id) !== (editingIncome.paymentId || editingIncome.id)) });
+    }
+    if (nextIncome.projectId) {
+      const nextProject = projects.find((project) => project.id === nextIncome.projectId);
+      if (nextProject) {
+        const payment = { id: nextIncome.paymentId || nextIncome.id, paymentId: nextIncome.paymentId || nextIncome.id, date: nextIncome.date, amount: nextIncome.amount, description: nextIncome.description };
+        const payments = nextProject.payments || [];
+        const paymentKey = payment.paymentId || payment.id;
+        const nextPayments = payments.some((item) => (item.paymentId || item.id) === paymentKey)
+          ? payments.map((item) => (item.paymentId || item.id) === paymentKey ? { ...item, ...payment } : item)
+          : [payment, ...payments];
+        upsert("projects", { ...nextProject, payments: nextPayments });
+      }
+    }
+    upsert("income", nextIncome);
+    setEditingIncome(null);
+  };
+  const deleteIncome = (entry) => {
+    if (entry.projectId) {
+      const project = projects.find((item) => item.id === entry.projectId);
+      if (project) upsert("projects", { ...project, payments: (project.payments || []).filter((payment) => (payment.paymentId || payment.id) !== (entry.paymentId || entry.id)) });
+    }
+    remove("income", entry.id);
+  };
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>المصاريف والواردات</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>مصاريف تشغيل المصنع، وواردات المشاريع</p></div>
+        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> {sub === "expenses" ? "مصروف جديد" : "وارد جديد"}</PrimaryButton>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard icon="trendDown" label="إجمالي المصاريف" value={fmt(totalExpenses)} accent="#A34632" />
+        <StatCard icon="trendUp" label="إجمالي الواردات" value={fmt(totalIncome)} accent="#4B6350" />
+        <StatCard icon="wallet" label="الصافي" value={fmt(totalIncome - totalExpenses)} accent="#8A6A32" />
+      </div>
+      <div className="flex gap-1.5">
+        <button onClick={() => setSub("expenses")} className="text-sm px-4 py-2 rounded-lg border transition" style={sub === "expenses" ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>مصاريف المصنع</button>
+        <button onClick={() => setSub("income")} className="text-sm px-4 py-2 rounded-lg border transition" style={sub === "income" ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>واردات المشاريع</button>
+      </div>
+      {sorted.length === 0 ? <EmptyState icon="wallet" title={sub === "expenses" ? "لا توجد مصاريف مسجّلة" : "لا توجد واردات مسجّلة"} /> : (
+        <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {sorted.map((x) => (
+              <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
+                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{sub === "expenses" ? x.type : (x.customerName || "وارد")}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{x.date} {x.projectId ? "· " + (projects.find((project) => project.id === x.projectId)?.customerName || "مشروع") : ""} {x.description ? "· " + x.description : ""}</div></div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="font-semibold" style={{ color: sub === "expenses" ? "#A34632" : "#4B6350" }}>{sub === "expenses" ? "−" : "+"}{fmt(x.amount)}</span>
+                  {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { sub === "expenses" ? remove("expenses", x.id) : deleteIncome(x); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3"><button onClick={() => sub === "expenses" ? setEditingExpense(x) : setEditingIncome(x)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></div>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {showAdd && sub === "expenses" && <Modal title="مصروف جديد" onClose={() => setShowAdd(false)}><AddExpenseForm onAdd={(e) => { upsert("expenses", e); setShowAdd(false); }} /></Modal>}
+      {showAdd && sub === "income" && <Modal title="وارد جديد" onClose={() => setShowAdd(false)}><AddIncomeForm projects={projects} onAdd={(e) => { upsert("income", e); setShowAdd(false); }} /></Modal>}
+      {editingExpense && <Modal title="تعديل المصروف" onClose={() => setEditingExpense(null)}><AddExpenseForm initialExpense={editingExpense} onAdd={(e) => { upsert("expenses", e); setEditingExpense(null); }} /></Modal>}
+      {editingIncome && <Modal title="تعديل الوارد" onClose={() => setEditingIncome(null)}><AddIncomeForm initialIncome={editingIncome} projects={projects} onAdd={saveIncome} /></Modal>}
+    </div>
+  );
+}
+function AddExpenseForm({ onAdd, initialExpense = null }) {
+  const [type, setType] = useState(initialExpense?.type || EXPENSE_TYPES[0]);
+  const [amount, setAmount] = useState(initialExpense?.amount ? String(initialExpense.amount) : "");
+  const [date, setDate] = useState(initialExpense?.date || todayISO());
+  const [description, setDescription] = useState(initialExpense?.description || "");
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: initialExpense?.id || uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  return (
+    <div className="flex flex-col gap-3">
+      <div><FieldLabel>نوع المصروف</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}>{EXPENSE_TYPES.map((t) => <option key={t}>{t}</option>)}</Select></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
+      <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialExpense ? "حفظ تعديل المصروف" : "حفظ المصروف"}</PrimaryButton>
+    </div>
+  );
+}
+function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
+  const [projectId, setProjectId] = useState(initialIncome?.projectId || "");
+  const [customerName, setCustomerName] = useState(initialIncome?.customerName || "");
+  const [amount, setAmount] = useState(initialIncome?.amount ? String(initialIncome.amount) : "");
+  const [date, setDate] = useState(initialIncome?.date || todayISO());
+  const [description, setDescription] = useState(initialIncome?.description || "");
+  const submit = () => { if (!positiveNumber(amount)) { notify("المبلغ يجب أن يكون موجبًا."); return; } const proj = projects.find((p) => p.id === projectId); onAdd({ ...initialIncome, id: initialIncome?.id || uid(), paymentId: initialIncome?.paymentId, projectId: projectId || null, customerName: proj ? proj.customerName : customerName.trim(), amount: Number(amount), date, description: description.trim() }); };
+  return (
+    <div className="flex flex-col gap-3">
+      <div>
+        <FieldLabel>المشروع (اختياري)</FieldLabel>
+        <SearchablePicker
+          items={projects}
+          value={projectId}
+          onSelect={setProjectId}
+          placeholder="ابحث باسم الزبون أو موقع المشروع..."
+          getLabel={(project) => project.customerName + (project.location ? " — " + project.location : "")}
+          getSearchText={(project) => [project.customerName, project.location, project.phone, project.dateCreated].filter(Boolean).join(" ")}
+        />
+      </div>
+      {!projectId && <div><FieldLabel>اسم الزبون</FieldLabel><TextInput value={customerName} onChange={(e) => setCustomerName(e.target.value)} /></div>}
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
+      <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> {initialIncome ? "حفظ تعديل الوارد" : "حفظ الوارد"}</PrimaryButton>
+    </div>
+  );
+}
+
+// ---------- Accounts (customers / workers / suppliers ledger) ----------
+function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, upsert, remove, projects = [], income = [], onOpenProject }) {
+  const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
+  const current = KINDS[sub];
+  return (
+    <div className="flex flex-col gap-5">
+      <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>الحسابات والديون</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>عملاء، عمال، وموردون — مع متابعة المستحقات</p></div>
+      <div className="flex gap-1.5">
+        {Object.entries(KINDS).map(([k, v]) => (
+          <button key={k} onClick={() => setSub(k)} className="text-sm px-4 py-2 rounded-lg border flex items-center gap-1.5 transition" style={sub === k ? { background: "var(--accent)", borderColor: "var(--accent)", color: "white" } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-body)" }}>
+            <Icon name={v.icon} size={14} /> {v.label}
+          </button>
+        ))}
+      </div>
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
+    </div>
+  );
+}
+
+function ContactsList({ kind, label, icon, collection, data, invoices, upsert, remove, projects, income, onOpenProject }) {
+  const [query, setQuery] = useState("");
+  const [showAdd, setShowAdd] = useState(false);
+  const [openId, setOpenId] = useState(null);
+  const filtered = data.filter((c) => !query || c.name.includes(query));
+  const open = data.find((c) => c.id === openId);
+  const relatedProjects = null;
+  return (
+    <div className="flex flex-col gap-4">
+      <div className="flex items-center gap-3 flex-wrap">
+        <div className="relative flex-1 min-w-[180px]">
+          <span className="absolute right-3 top-1/2 -translate-y-1/2" style={{ color: "var(--text-muted)" }}><Icon name="search" size={15} /></span>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder={`بحث بالاسم بين ${label}...`} className="w-full rounded-lg border pr-9 pl-3 py-2 text-sm outline-none" style={{ background: "var(--input-bg)", borderColor: "var(--card-border)", color: "var(--text-strong)" }} />
+        </div>
+        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> إضافة {label.replace(/ون$|اء$/, "")}</PrimaryButton>
+      </div>
+      {filtered.length === 0 ? <EmptyState icon={icon} title={`لا يوجد ${label} مسجّلون بعد`} /> : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {filtered.map((c) => {
+            const bal = contactBalance(c);
+            return (
+              <button key={c.id} onClick={() => setOpenId(c.id)} className="text-right rounded-2xl border p-4 flex flex-col gap-2" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+                <div className="flex items-center justify-between">
+                  <div className="font-semibold" style={{ color: "var(--text-strong)" }}>{c.name}</div>
+                  <Icon name={icon} size={16} color="var(--text-muted)" />
+                </div>
+                {c.phone && <div className="text-xs flex items-center gap-1" style={{ color: "var(--text-muted)" }}><Icon name="phone" size={11} /> {c.phone}</div>}
+                <div className="pt-2 border-t" style={{ borderColor: "var(--divider)" }}>
+                  {bal > 0 && <Badge bg="var(--warn-bg)" fg="#A34632">{kind === "suppliers" ? "علينا" : "عليه"} {fmt(bal)}</Badge>}
+                  {bal < 0 && <Badge bg="var(--good-bg)" fg="#4B6350">{kind === "suppliers" ? "لنا" : "له"} {fmt(-bal)}</Badge>}
+                  {bal === 0 && <Badge bg="var(--divider)" fg="var(--text-muted)">لا يوجد رصيد</Badge>}
+                </div>
+              </button>
+            );
+          })}
+        </div>
+      )}
+      {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
+      {open && <ContactDetail contact={open} label={label} icon={icon} invoices={invoices} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
+    </div>
+  );
+}
+
+function AddContactForm({ onAdd, existing = [] }) {
+  const [name, setName] = useState("");
+  const [phone, setPhone] = useState("");
+  const [notes, setNotes] = useState("");
+  const submit = () => {
+    if (!name.trim()) return;
+    if (hasDuplicateName(existing, name)) { notify("هذا الاسم مسجل مسبقًا."); return; }
+    onAdd({ id: uid(), name: name.trim(), phone: phone.trim(), notes: notes.trim(), transactions: [] });
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      <div><FieldLabel>الاسم</FieldLabel><TextInput value={name} onChange={(e) => setName(e.target.value)} /></div>
+      <div><FieldLabel>رقم الهاتف (اختياري)</FieldLabel><TextInput value={phone} onChange={(e) => setPhone(e.target.value)} /></div>
+      <div><FieldLabel>ملاحظات (اختياري)</FieldLabel><TextInput value={notes} onChange={(e) => setNotes(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!name.trim()}><Icon name="plus" size={16} /> إضافة</PrimaryButton>
+    </div>
+  );
+}
+
+function ContactDetail({ contact, label, icon, invoices = [], onClose, onSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
+  const [local, setLocal] = useState(contact);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [txType, setTxType] = useState("debit");
+  const [txAmount, setTxAmount] = useState("");
+  const [txNote, setTxNote] = useState("");
+  const [pendingTxDelete, setPendingTxDelete] = useState(null);
+  const [supplierPaymentAmount, setSupplierPaymentAmount] = useState("");
+  const [supplierPaymentDate, setSupplierPaymentDate] = useState(todayISO());
+  const [supplierPaymentNote, setSupplierPaymentNote] = useState("");
+  useEffect(() => setLocal(contact), [contact.id]);
+  const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
+  const balance = contactBalance(local);
+  const transactions = local.transactions || [];
+  const supplierStatement = label === "موردون" ? getSupplierStatement(local, invoices) : null;
+  const isDuplicateName = hasDuplicateName(existing, local.name);
+  const projectTotals = (relatedProjects || []).reduce((summary, project) => {
+    const sm = getProjectSummary(project, income);
+    return { cost: summary.cost + sm.cost, paid: summary.paid + sm.paid, remaining: summary.remaining + sm.remaining, surplus: summary.surplus + sm.surplus };
+  }, { cost: 0, paid: 0, remaining: 0, surplus: 0 });
+  const projectRemaining = projectTotals.remaining;
+  const grandTotal = balance + projectRemaining - projectTotals.surplus;
+
+  const addTx = () => {
+    if (!positiveNumber(txAmount) || Number(txAmount) < 0) { notify("مبلغ الحركة يجب أن يكون موجبًا."); return; }
+    const tx = { id: uid(), date: todayISO(), type: txType, amount: Number(txAmount), note: txNote.trim() };
+    update({ transactions: [tx, ...transactions] });
+    setTxAmount(""); setTxNote("");
+  };
+  const removeTx = (id) => { update({ transactions: transactions.filter((t) => t.id !== id) }); setPendingTxDelete(null); };
+  const addSupplierPayment = () => {
+    if (!positiveNumber(supplierPaymentAmount)) { notify("أدخل مبلغ سداد موجبًا."); return; }
+    const amount = Number(supplierPaymentAmount);
+    const payment = { id: uid(), date: supplierPaymentDate || todayISO(), type: "credit", amount, note: supplierPaymentNote.trim() || "سداد عام للمورد", supplierPayment: true, allocations: allocateSupplierPayment(local, invoices, amount) };
+    update({ transactions: [payment, ...transactions] });
+    setSupplierPaymentAmount(""); setSupplierPaymentNote(""); setSupplierPaymentDate(todayISO());
+    notify(payment.allocations.length ? "تم تسجيل السداد وتوزيعه على أقدم الفواتير." : "تم تسجيل السداد كرصيد لنا عند المورد.", "success");
+  };
+
+  return (
+    <Modal title={local.name} onClose={onClose} wide>
+      <div className="flex flex-col gap-4">
+        <div className="grid sm:grid-cols-2 gap-3">
+          <div><FieldLabel>الاسم</FieldLabel><TextInput value={local.name} onChange={(e) => update({ name: e.target.value })} />{isDuplicateName && <div className="text-xs mt-1" style={{ color: "#A34632" }}>يوجد اسم مطابق مسجّل مسبقًا — تأكد أنه ليس تكرارًا لنفس الجهة.</div>}</div>
+          <div><FieldLabel>رقم الهاتف</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
+        </div>
+        <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
+
+        <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: balance > 0 ? "var(--warn-bg)" : balance < 0 ? "var(--good-bg)" : "var(--divider)" }}>
+          <span className="text-sm" style={{ color: "var(--text-body)" }}>{label === "موردون" ? "الرصيد اليدوي للمورد" : "الرصيد اليدوي للعميل"}</span>
+          <span className="font-bold text-lg" style={{ color: balance > 0 ? "#A34632" : balance < 0 ? "#4B6350" : "var(--text-strong)" }}>
+            {balance === 0 ? "لا يوجد" : balance > 0 ? (label === "موردون" ? `علينا ${fmt(balance)}` : `عليه ${fmt(balance)}`) : (label === "موردون" ? `لنا ${fmt(-balance)}` : `له ${fmt(-balance)}`)}
+          </span>
+        </div>
+
+        {label === "موردون" && supplierStatement && (
+          <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
+            <FieldLabel>الحساب العام للمورد</FieldLabel>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>إجمالي الفواتير الآجلة</div><strong style={{ color: "var(--text-strong)" }}>{fmt(supplierStatement.totalInvoices)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>المدفوع</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.invoicePaid)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: supplierStatement.owed ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مستحق علينا</div><strong style={{ color: supplierStatement.owed ? "#A34632" : "#4B6350" }}>{fmt(supplierStatement.owed)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: supplierStatement.credit ? "var(--good-bg)" : "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>مستحق لنا</div><strong style={{ color: "#4B6350" }}>{fmt(supplierStatement.credit)}</strong></div>
+            </div>
+            <div className="rounded-lg border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+              <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>تسجيل سداد عام</div>
+              <div className="grid grid-cols-2 gap-2"><TextInput type="number" placeholder="مبلغ السداد" value={supplierPaymentAmount} onChange={(e) => setSupplierPaymentAmount(e.target.value)} /><TextInput type="date" value={supplierPaymentDate} onChange={(e) => setSupplierPaymentDate(e.target.value)} /></div>
+              <TextInput placeholder="ملاحظة (اختياري)" value={supplierPaymentNote} onChange={(e) => setSupplierPaymentNote(e.target.value)} />
+              <div className="text-xs" style={{ color: "var(--text-muted)" }}>يوزّع السداد تلقائيًا على أقدم الفواتير غير المسددة، وأي زيادة تصبح رصيدًا لنا عند المورد.</div>
+              <PrimaryButton onClick={addSupplierPayment} full disabled={!supplierPaymentAmount}><Icon name="plus" size={16} /> تسجيل السداد</PrimaryButton>
+            </div>
+            <div className="flex flex-col gap-1">
+              <div className="text-xs font-medium" style={{ color: "var(--text-muted)" }}>الفواتير الآجلة</div>
+              {supplierStatement.rows.length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد فواتير آجلة لهذا المورد.</div> : supplierStatement.rows.map((row) => <div key={row.invoice.id} className="flex items-center justify-between text-xs py-1.5 border-b" style={{ borderColor: "var(--divider)" }}><span>#{row.invoice.invoiceNumber || row.invoice.id} · {row.invoice.date}</span><span style={{ color: row.remaining ? "#A34632" : "#4B6350" }}>{row.remaining ? `متبقي ${fmt(row.remaining)}` : "مسددة"}</span></div>)}
+            </div>
+          </div>
+        )}
+
+        {relatedProjects != null && (
+          <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+            <FieldLabel>مشاريع هذا العميل ({relatedProjects.length})</FieldLabel>
+            <div className="rounded-lg p-3 flex items-center justify-between" style={{ background: grandTotal > 0 ? "var(--warn-bg)" : "var(--good-bg)" }}>
+              <span className="text-sm" style={{ color: "var(--text-body)" }}>الإجمالي الكلي المستحق (الرصيد + باقي المشاريع)</span>
+              <span className="font-bold text-lg" style={{ color: grandTotal > 0 ? "#A34632" : "#4B6350" }}>{grandTotal > 0 ? fmt(grandTotal) : grandTotal < 0 ? "رصيد للعميل " + fmt(-grandTotal) : "لا يوجد"}</span>
+            </div>
+            <div className="text-xs" style={{ color: "var(--text-muted)" }}>الرصيد اليدوي أعلاه لا يشمل دفعات المشاريع، وتُحتسب دفعات المشاريع في الملخص أدناه بشكل منفصل.</div>
+            <div className="grid grid-cols-3 gap-2 text-xs">
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>تكلفة المشاريع</div><strong style={{ color: "var(--text-strong)" }}>{fmt(projectTotals.cost)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>مجموع الواصل</div><strong style={{ color: "#4B6350" }}>{fmt(projectTotals.paid)}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: projectRemaining ? "var(--warn-bg)" : "var(--good-bg)" }}><div style={{ color: "var(--text-muted)" }}>{projectRemaining ? "الباقي العام" : "الحالة"}</div><strong style={{ color: projectRemaining ? "#A34632" : "#4B6350" }}>{projectRemaining ? fmt(projectRemaining) : "خالص"}</strong></div>
+            </div>
+            {projectTotals.surplus > 0 && <div className="text-xs" style={{ color: "#4B6350" }}>زيادة مدفوعة في مشاريع مكتملة (رصيد للعميل): {fmt(projectTotals.surplus)}</div>}
+            {relatedProjects.length === 0 ? (
+              <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد مشاريع مرتبطة بهذا العميل بعد</div>
+            ) : (
+              <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                {relatedProjects.map((p) => {
+                  const m = getProjectSummary(p, income);
+                  const total = m.cost;
+                  return (
+                    <button key={p.id} onClick={() => { onOpenProject(p.id); onClose(); }} className="flex items-center justify-between py-2 text-right" style={{ borderColor: "var(--divider)" }}>
+                      <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{p.location || "بدون موقع"}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{p.dateCreated} · {p.productType}</div></div>
+                      <div className="flex items-center gap-2">
+                        <Badge bg={STATUS_COLOR[p.status].bg} fg={STATUS_COLOR[p.status].fg}>{p.status}</Badge>
+                        <span className="text-xs" style={{ color: m.remaining ? "#A34632" : "#4B6350" }}>{m.remaining ? `باقي ${fmt(m.remaining)}` : m.surplus ? `رصيد ${fmt(m.surplus)}` : m.settled ? "خالص" : "بانتظار الكيل"}</span>
+                        <span className="text-sm font-medium" style={{ color: "var(--text-strong)" }}>{fmt(total)}</span>
+                      </div>
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        )}
+
+        <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+          <FieldLabel>{label === "موردون" ? "حركة يدوية (غير مرتبطة بفاتورة)" : "تسجيل حركة جديدة"}</FieldLabel>
+          <div className="grid grid-cols-2 gap-2">
+            <Select value={txType} onChange={(e) => setTxType(e.target.value)}><option value="debit">{label === "موردون" ? "زيادة مستحق علينا" : "زيادة دين عليه"}</option><option value="credit">{label === "موردون" ? "رصيد لنا / تسوية" : "تسديد / دفعة منه"}</option></Select>
+            <TextInput type="number" placeholder="المبلغ" value={txAmount} onChange={(e) => setTxAmount(e.target.value)} />
+          </div>
+          <TextInput placeholder="ملاحظة (اختياري)" value={txNote} onChange={(e) => setTxNote(e.target.value)} />
+          <PrimaryButton onClick={addTx} full disabled={!txAmount}><Icon name="plus" size={16} /> تسجيل الحركة</PrimaryButton>
+        </div>
+
+        {transactions.length === 0 ? <EmptyState icon={icon} title="لا توجد حركات مسجّلة بعد" /> : (
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {transactions.map((t) => (
+              <div key={t.id} className="flex items-center justify-between py-2.5" style={{ borderColor: "var(--divider)" }}>
+                <div className="flex items-center gap-2">
+                  <Icon name={t.type === "debit" ? "trendUp" : "trendDown"} size={14} color={t.type === "debit" ? "#A34632" : "#4B6350"} />
+                  <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{t.note || (t.type === "debit" ? "زيادة دين" : "تسديد")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{t.date}</div></div>
+                </div>
+                <div className="flex items-center gap-3">
+                  <span className="font-medium" style={{ color: t.type === "debit" ? "#A34632" : "#4B6350" }}>{t.type === "debit" ? "+" : "−"}{fmt(t.amount)}</span>
+                  {pendingTxDelete === t.id ? <ConfirmInline onConfirm={() => removeTx(t.id)} onCancel={() => setPendingTxDelete(null)} /> : <button onClick={() => setPendingTxDelete(t.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+
+        <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
+          {confirmDelete ? <ConfirmInline label="حذف نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف</button>}
+        </div>
+      </div>
+    </Modal>
+  );
+}
+
+// ---------- Attendance ----------
+function AttendanceTab({ workers, attendance, upsert, remove }) {
+  const [date, setDate] = useState(todayISO());
+  const dayRecords = attendance.filter((a) => a.date === date);
+  const getStatus = (workerId) => dayRecords.find((a) => a.workerId === workerId)?.status;
+  const setStatus = (worker, status) => upsert("attendance", { id: worker.id + "_" + date, workerId: worker.id, workerName: worker.name, date, status });
+
+  const month = monthKey(date);
+  const monthRecords = attendance.filter((a) => monthKey(a.date) === month);
+  const summary = workers.map((w) => ({
+    name: w.name,
+    present: monthRecords.filter((a) => a.workerId === w.id && a.status === "حاضر").length,
+    half: monthRecords.filter((a) => a.workerId === w.id && a.status === "نصف يوم").length,
+    absent: monthRecords.filter((a) => a.workerId === w.id && a.status === "غائب").length,
+  }));
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>حضور العمال</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>تسجيل الحضور اليومي ومتابعة الملخص الشهري</p></div>
+
+      <div className="flex items-center gap-2"><FieldLabel>التاريخ</FieldLabel></div>
+      <TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} className="max-w-[200px]" />
+
+      {workers.length === 0 ? (
+        <EmptyState icon="users" title="لا يوجد عمال مسجّلون بعد" sub="أضف العمال من قسم «الحسابات والديون» ثم عد هنا لتسجيل حضورهم" />
+      ) : (
+        <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {workers.map((w) => {
+              const st = getStatus(w.id);
+              return (
+                <div key={w.id} className="flex items-center justify-between px-4 py-3 gap-2 flex-wrap" style={{ borderColor: "var(--divider)" }}>
+                  <div className="text-sm font-medium flex items-center gap-1.5" style={{ color: "var(--text-strong)" }}><Icon name="user" size={14} /> {w.name}</div>
+                  <div className="flex gap-1.5">
+                    {ATTENDANCE_STATUSES.map((s) => (
+                      <button key={s} onClick={() => setStatus(w, s)} className="text-xs px-3 py-1.5 rounded-lg border transition" style={st === s ? { background: ATT_COLOR[s].bg, borderColor: ATT_COLOR[s].fg, color: ATT_COLOR[s].fg } : { background: "var(--card-bg)", borderColor: "var(--card-border)", color: "var(--text-muted)" }}>{s}</button>
+                    ))}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {workers.length > 0 && (
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>ملخص شهر {month}</h3>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            <div className="flex items-center justify-between py-2 text-xs font-medium" style={{ color: "var(--text-muted)" }}><span>العامل</span><span>حاضر / نصف يوم / غائب</span></div>
+            {summary.map((s) => (
+              <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}>
+                <span>{s.name}</span>
+                <span className="flex items-center gap-2">
+                  <Badge bg="var(--good-bg)" fg="#4B6350">{s.present}</Badge>
+                  <Badge bg="var(--warn-bg)" fg="#8A6A32">{s.half}</Badge>
+                  <Badge bg="var(--divider)" fg="var(--text-muted)">{s.absent}</Badge>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Reports ----------
+function ReportsTab({ month, setMonth, projects, invoices, expenses, income, attendance, workers, customers, suppliers, downloadsNs }) {
+  const inMonth = (arr, field) => arr.filter((x) => monthKey(x[field || "date"]) === month);
+  const allIncome = getAllProjectIncome(projects, income);
+  const mIncome = inMonth(allIncome);
+  const mExpenses = inMonth(expenses);
+  const mInvoices = inMonth(invoices);
+  const totalIncome = mIncome.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const totalExpenses = mExpenses.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const totalInvoices = mInvoices.reduce((s, x) => s + Number(x.amount || 0), 0);
+  const net = totalIncome - totalExpenses - totalInvoices;
+
+  const completedProjects = projects.filter((p) => p.completedAt && monthKey(p.completedAt) === month);
+  const newProjects = projects.filter((p) => monthKey(p.dateCreated) === month);
+
+  const expenseByType = EXPENSE_TYPES.map((t) => ({ label: t, total: mExpenses.filter((e) => e.type === t).reduce((s, e) => s + Number(e.amount || 0), 0) })).filter((r) => r.total > 0);
+  const invoiceByType = ["purchase", "sale"].map((direction) => ({ label: direction === "purchase" ? "مشتريات" : "مبيعات", total: mInvoices.filter((i) => i.direction === direction).reduce((s, i) => s + Number(i.amount || 0), 0) })).filter((r) => r.total > 0);
+
+  const monthAttendance = attendance.filter((a) => monthKey(a.date) === month);
+  const attSummary = workers.map((w) => ({
+    name: w.name,
+    present: monthAttendance.filter((a) => a.workerId === w.id && a.status === "حاضر").length,
+    half: monthAttendance.filter((a) => a.workerId === w.id && a.status === "نصف يوم").length,
+    absent: monthAttendance.filter((a) => a.workerId === w.id && a.status === "غائب").length,
+  })).filter((s) => s.present + s.half + s.absent > 0);
+
+  const customerDebts = customers
+    .map((c) => { const o = getCustomerOutstanding(c, projects, income); return { name: c.name, phone: c.phone, ledger: o.ledger, projectsRemaining: o.projectsRemaining, projectsSurplus: o.projectsSurplus, total: o.total }; })
+    .filter((c) => c.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const supplierDebts = suppliers
+    .map((s) => { const statement = getSupplierStatement(s, invoices); return { name: s.name, phone: s.phone, total: statement.owed, credit: statement.credit }; })
+    .filter((s) => s.total > 0)
+    .sort((a, b) => b.total - a.total);
+  const totalCustomerDebt = customerDebts.reduce((s, c) => s + c.total, 0);
+  const totalSupplierDebt = supplierDebts.reduce((s, c) => s + c.total, 0);
+  const totalSupplierCredit = suppliers.reduce((sum, supplier) => sum + getSupplierStatement(supplier, invoices).credit, 0);
+
+  const exportMonth = async () => {
+    if (!window.XLSX) { notify("ميزة التصدير غير متاحة هنا حاليًا."); return; }
+    const wb = XLSX.utils.book_new();
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet([{ الشهر: month, الواردات: totalIncome, المصاريف: totalExpenses, الفواتير: totalInvoices, الصافي: net }]), "ملخص");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mIncome.map((x) => ({ الزبون: x.customerName, المشروع: projects.find((p) => p.id === x.projectId)?.customerName || "", "معرف المشروع": x.projectId || "", المبلغ: x.amount, التاريخ: x.date, الوصف: x.description }))), "الواردات");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mExpenses.map((x) => ({ النوع: x.type, المبلغ: x.amount, التاريخ: x.date }))), "المصاريف");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(mInvoices.map((x) => ({ النوع: x.type, المورد: x.supplierName, المبلغ: x.amount, التاريخ: x.date }))), "الفواتير");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(completedProjects.map((p) => ({ الزبون: p.customerName, الموقع: p.location, الحالة: p.status, "تاريخ المشروع": p.dateCreated, "تاريخ الإكمال": p.completedAt, الإجمالي: projectCost(p) }))), "مشاريع مكتملة");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(Array.from(new Map(projects.flatMap((project) => getProjectPayments(project, income).filter((payment) => monthKey(payment.date) === month).map((payment) => [payment.paymentId || payment.id, { الزبون: project.customerName, "معرف المشروع": project.id, "تاريخ الدفعة": payment.date, المبلغ: payment.amount, "وصف الدفعة": payment.description || "" }]))).values())), "دفعات المشاريع");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(workers.map((w) => { const records = monthAttendance.filter((a) => a.workerId === w.id); return { العامل: w.name, حاضر: records.filter((a) => a.status === "حاضر").length, "نصف يوم": records.filter((a) => a.status === "نصف يوم").length, غائب: records.filter((a) => a.status === "غائب").length }; })), "حضور العمال");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(customerDebts.length ? customerDebts.map((c) => ({ العميل: c.name, الهاتف: c.phone || "", "رصيد يدوي": c.ledger, "باقي مشاريع": c.projectsRemaining, "رصيد فائض المشاريع": c.projectsSurplus || 0, "الإجمالي المستحق": c.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات العملاء");
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(supplierDebts.length ? supplierDebts.map((s) => ({ المورد: s.name, الهاتف: s.phone || "", "المبلغ المستحق": s.total })) : [{ "لا توجد مستحقات": "" }]), "مستحقات للموردين");
+    const buf = XLSX.write(wb, { type: "array", bookType: "xlsx" });
+    const blob = new Blob([buf], { type: "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" });
+    const filename = `تقرير-${month}.xlsx`;
+    if (downloadsNs) { try { await downloadsNs.save({ filename, data: blob }); } catch (e) { console.error(e); } }
+    else downloadBlob(blob, filename);
+  };
+
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص شامل لأي شهر تختاره — صافي الحركة النقدية = الواردات − المصاريف − الفواتير</p></div>
+        <div className="flex items-center gap-2">
+          <TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" />
+          <PrimaryButton onClick={exportMonth}><Icon name="download" size={16} /> تصدير التقرير</PrimaryButton>
+        </div>
+      </div>
+
+      <div className="grid grid-cols-2 lg:grid-cols-4 gap-3">
+        <StatCard icon="trendUp" label="واردات الشهر" value={fmt(totalIncome)} accent="#4B6350" />
+        <StatCard icon="trendDown" label="مصاريف الشهر" value={fmt(totalExpenses)} accent="#A34632" />
+        <StatCard icon="receipt" label="فواتير الشهر" value={fmt(totalInvoices)} accent="#8A6A32" />
+        <StatCard icon={net >= 0 ? "trendUp" : "trendDown"} label="صافي الحركة النقدية" value={fmt(net)} accent={net >= 0 ? "#4B6350" : "#A34632"} />
+      </div>
+
+      <div>
+        <h2 className="text-sm font-semibold mb-3" style={{ color: "var(--text-body)" }}>المستحقات حتى اليوم — عملاء وموردون</h2>
+        <div className="grid grid-cols-2 lg:grid-cols-3 gap-3 mb-3">
+          <StatCard icon="users" label="إجمالي مستحق على العملاء (لنا)" value={fmt(totalCustomerDebt)} sub={customerDebts.length + " عميل مدين"} accent="#A6673B" />
+          <StatCard icon="briefcase" label="إجمالي مستحق للموردين (علينا)" value={fmt(totalSupplierDebt)} sub={supplierDebts.length + " مورّد له مستحقات"} accent="#5C4A38" />
+          <StatCard icon="wallet" label="إجمالي مستحق لنا من الموردين" value={fmt(totalSupplierCredit)} sub="دفعات زائدة أو أرصدة دائنة" accent="#4B6350" />
+        </div>
+        <div className="grid lg:grid-cols-2 gap-4">
+          <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+            <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تفصيل مستحقات العملاء</h3>
+            {customerDebts.length === 0 ? <EmptyState icon="users" title="لا توجد مستحقات على العملاء حاليًا" /> : (
+              <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                {customerDebts.map((c) => (
+                  <div key={c.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}>
+                    <div>
+                      <div style={{ color: "var(--text-body)" }}>{c.name}</div>
+                      {c.phone && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{c.phone}</div>}
+                    </div>
+                    <span className="font-semibold" style={{ color: "#A34632" }}>{fmt(c.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+          <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+            <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>تفصيل مستحقات الموردين</h3>
+            {supplierDebts.length === 0 ? <EmptyState icon="briefcase" title="لا توجد مستحقات للموردين حاليًا" /> : (
+              <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+                {supplierDebts.map((s) => (
+                  <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}>
+                    <div>
+                      <div style={{ color: "var(--text-body)" }}>{s.name}</div>
+                      {s.phone && <div className="text-xs" style={{ color: "var(--text-muted)" }}>{s.phone}</div>}
+                    </div>
+                    <span className="font-semibold" style={{ color: "#A34632" }}>{fmt(s.total)}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+        <div className="text-xs mt-2" style={{ color: "var(--text-muted)" }}>مستحقات العملاء تشمل الرصيد اليدوي + باقي كل مشاريعهم غير المسددة بالكامل. هذه الأرقام لحظية (حتى اليوم) وليست خاصة بالشهر المختار فقط.</div>
+      </div>
+
+      <div className="grid lg:grid-cols-2 gap-4">
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>المصاريف حسب النوع</h3>
+          {expenseByType.length === 0 ? <EmptyState icon="wallet" title="لا توجد مصاريف هذا الشهر" /> : <BarBreakdown rows={expenseByType} />}
+        </div>
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>الفواتير حسب النوع</h3>
+          {invoiceByType.length === 0 ? <EmptyState icon="receipt" title="لا توجد فواتير هذا الشهر" /> : <BarBreakdown rows={invoiceByType} />}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+        <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>مشاريع اكتملت هذا الشهر ({completedProjects.length})</h3>
+        {completedProjects.length === 0 ? <EmptyState icon="factory" title="لا توجد مشاريع مكتملة هذا الشهر" /> : (
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {completedProjects.map((p) => (
+              <div key={p.id} className="flex items-center justify-between py-2.5" style={{ borderColor: "var(--divider)" }}>
+                <div><div className="text-sm" style={{ color: "var(--text-body)" }}>{p.customerName}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{p.location}</div></div>
+                <span className="font-semibold" style={{ color: "var(--text-strong)" }}>{fmt((p.measurements || []).reduce((s, m) => s + Number(m.totalAmount || 0), 0))}</span>
+              </div>
+            ))}
+          </div>
+        )}
+        <div className="text-xs mt-3" style={{ color: "var(--text-muted)" }}>مشاريع جديدة بدأت هذا الشهر: {newProjects.length}</div>
+      </div>
+
+      {attSummary.length > 0 && (
+        <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>أيام حضور العمال هذا الشهر</h3>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {attSummary.map((s) => <div key={s.name} className="flex items-center justify-between py-2 text-sm" style={{ color: "var(--text-body)", borderColor: "var(--divider)" }}><span>{s.name}</span><span className="flex items-center gap-2"><Badge bg="var(--good-bg)" fg="#4B6350">حاضر {s.present}</Badge><Badge bg="var(--warn-bg)" fg="#8A6A32">نصف يوم {s.half}</Badge><Badge bg="var(--divider)" fg="var(--text-muted)">غائب {s.absent}</Badge></span></div>)}
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------- Personal log ----------
+function PersonalLogTab({ data, upsert, remove }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const sorted = [...data].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const totalIn = data.filter((x) => x.type === "واصل").reduce((s, x) => s + Number(x.amount || 0), 0);
+  const totalOut = data.filter((x) => x.type === "مصروف").reduce((s, x) => s + Number(x.amount || 0), 0);
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>سجلي الشخصي</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ما وصلك من مبالغ وما صرفته — سجل خاص بك</p></div>
+        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> تسجيل حركة</PrimaryButton>
+      </div>
+      <div className="grid grid-cols-3 gap-3">
+        <StatCard icon="trendUp" label="إجمالي الواصل" value={fmt(totalIn)} accent="#4B6350" />
+        <StatCard icon="trendDown" label="إجمالي المصروف" value={fmt(totalOut)} accent="#A34632" />
+        <StatCard icon="wallet" label="المتبقي بيدي" value={fmt(totalIn - totalOut)} accent="#8A6A32" />
+      </div>
+      {sorted.length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات مسجّلة بعد" /> : (
+        <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>
+          <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
+            {sorted.map((x) => (
+              <div key={x.id} className="flex items-center justify-between px-4 py-3 gap-2" style={{ borderColor: "var(--divider)" }}>
+                <div className="min-w-0"><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{x.type}</div><div className="text-xs mt-0.5" style={{ color: "var(--text-muted)" }}>{x.date} {x.description ? "· " + x.description : ""}</div></div>
+                <div className="flex items-center gap-3 shrink-0">
+                  <span className="font-semibold" style={{ color: x.type === "واصل" ? "#4B6350" : "#A34632" }}>{x.type === "واصل" ? "+" : "−"}{fmt(x.amount)}</span>
+                  {pendingDelete === x.id ? <ConfirmInline onConfirm={() => { remove("personalLog", x.id); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(x.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      {showAdd && <Modal title="تسجيل حركة" onClose={() => setShowAdd(false)}><AddPersonalForm onAdd={(e) => { upsert("personalLog", e); setShowAdd(false); }} /></Modal>}
+    </div>
+  );
+}
+function AddPersonalForm({ onAdd }) {
+  const [type, setType] = useState("واصل");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [description, setDescription] = useState("");
+  const submit = () => { if (!positiveNumber(amount) || Number(amount) < 0) { notify("المبلغ يجب أن يكون موجبًا."); return; } onAdd({ id: uid(), type, amount: Number(amount), date, description: description.trim() }); };
+  return (
+    <div className="flex flex-col gap-3">
+      <div><FieldLabel>النوع</FieldLabel><Select value={type} onChange={(e) => setType(e.target.value)}><option value="واصل">واصل (مبلغ استلمته)</option><option value="مصروف">مصروف (صرفته)</option></Select></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div>
+      <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!amount}><Icon name="plus" size={16} /> حفظ</PrimaryButton>
+    </div>
+  );
+}
+
+// ---------- Daily expenses ----------
+function DailyExpensesTab({ expenses, treasury, upsert, remove }) {
+  const [showForm, setShowForm] = useState(false);
+  const [editing, setEditing] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const total = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const save = (expense) => {
+    const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+    const transaction = { id: uid(), date: expense.date, direction: "out", amount: Number(expense.amount), expenseId: expense.id, note: expense.category + (expense.description ? " · " + expense.description : "") };
+    upsert("expenses", expense);
+    upsert("treasury", { ...currentTreasury, transactions: [transaction, ...(currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id)] });
+    setShowForm(false); setEditing(null);
+  };
+  const deleteExpense = (expense) => {
+    remove("expenses", expense.id);
+    const currentTreasury = treasury?.[0];
+    if (currentTreasury) upsert("treasury", { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id) });
+    setPendingDelete(null);
+  };
+  const sorted = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  return <div className="flex flex-col gap-5">
+    <div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>المصروفات اليومية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>الكهرباء والإيجار والرواتب والصيانة وغيرها من مصروفات المطحنة</p></div><PrimaryButton onClick={() => setShowForm(true)}><Icon name="plus" size={16} /> تسجيل مصروف</PrimaryButton></div>
+    <StatCard icon="trendDown" label="إجمالي المصروفات" value={fmt(total)} accent="#A34632" />
+    {sorted.length === 0 ? <EmptyState icon="wallet" title="لا توجد مصروفات مسجلة" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{sorted.map((expense) => <div key={expense.id} className="flex items-center justify-between gap-3 px-4 py-3 border-b" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>{expense.category}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{expense.date}{expense.description ? " · " + expense.description : ""}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: "#A34632" }}>−{fmt(expense.amount)}</span>{pendingDelete === expense.id ? <ConfirmInline onConfirm={() => deleteExpense(expense)} onCancel={() => setPendingDelete(null)} /> : <><button onClick={() => setEditing(expense)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(expense.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button></>}</div></div>)}</div>}
+    {(showForm || editing) && <Modal title={editing ? "تعديل مصروف" : "مصروف يومي جديد"} onClose={() => { setShowForm(false); setEditing(null); }}><DailyExpenseForm initial={editing} onSave={save} /></Modal>}
+  </div>;
+}
+
+function DailyExpenseForm({ initial, onSave }) {
+  const [category, setCategory] = useState(initial?.category || EXPENSE_TYPES[0]);
+  const [amount, setAmount] = useState(initial?.amount ? String(initial.amount) : "");
+  const [date, setDate] = useState(initial?.date || todayISO());
+  const [description, setDescription] = useState(initial?.description || "");
+  const submit = () => { if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; } onSave({ id: initial?.id || uid(), category, amount: Number(amount), date, description: description.trim() }); };
+  return <div className="flex flex-col gap-3"><div><FieldLabel>بند المصروف</FieldLabel><Select value={category} onChange={(e) => setCategory(e.target.value)}>{EXPENSE_TYPES.map((item) => <option key={item}>{item}</option>)}</Select></div><div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div><div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div><PrimaryButton onClick={submit} full disabled={!amount}>حفظ المصروف</PrimaryButton></div>;
+}
+
+// ---------- Monthly reports ----------
+function MillReportsTab({ month, setMonth, invoices, expenses, customers, suppliers, inventory, inventoryMovements, treasury }) {
+  const inMonth = (items) => items.filter((item) => monthKey(item.date) === month);
+  const monthInvoices = inMonth(invoices);
+  const monthExpenses = inMonth(expenses);
+  const purchases = monthInvoices.filter((item) => item.direction === "purchase").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const sales = monthInvoices.filter((item) => item.direction === "sale").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const expenseTotal = monthExpenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const customerDebts = customers.map((item) => ({ ...item, balance: contactBalance(item) })).filter((item) => item.balance > 0).sort((a, b) => b.balance - a.balance);
+  const supplierStatements = suppliers.map((item) => ({ ...item, statement: getSupplierStatement(item, invoices) })).filter((item) => item.statement.owed > 0 || item.statement.credit > 0);
+  const currentTreasury = treasury?.[0] || { openingBalance: 0, transactions: [] };
+  const cashBalance = Number(currentTreasury.openingBalance || 0) + (currentTreasury.transactions || []).reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
+  const lowStock = inventory.filter((item) => Number(item.quantity) <= Number(item.minThreshold || 0));
+  return <div className="flex flex-col gap-5"><div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص المبيعات والمشتريات والمصروفات والمستحقات والخزينة</p></div><TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" /></div>
+    <div className="grid grid-cols-2 lg:grid-cols-4 gap-3"><StatCard icon="trendUp" label="مبيعات الشهر" value={fmt(sales)} accent="#4B6350" /><StatCard icon="truck" label="مشتريات الشهر" value={fmt(purchases)} accent="#8A6A32" /><StatCard icon="trendDown" label="المصروفات" value={fmt(expenseTotal)} accent="#A34632" /><StatCard icon="wallet" label="رصيد الخزينة" value={fmt(cashBalance)} accent="#6E8F72" /></div>
+    <div className="grid lg:grid-cols-2 gap-4"><ReportList title="مستحقات العملاء لنا" empty="لا توجد مستحقات على العملاء" items={customerDebts.map((item) => ({ name: item.name, value: fmt(item.balance) }))} /><ReportList title="حسابات الموردين" empty="لا توجد مستحقات للموردين" items={supplierStatements.map((item) => ({ name: item.name, value: item.statement.owed > 0 ? "علينا " + fmt(item.statement.owed) : "لنا " + fmt(item.statement.credit) }))} /></div>
+    <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>ملخص المخزون</h3><div className="grid grid-cols-2 sm:grid-cols-3 gap-3 text-sm"><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>عدد الأصناف</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inventory.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>أصناف منخفضة</span><strong className="block mt-1" style={{ color: lowStock.length ? "#A34632" : "#4B6350" }}>{lowStock.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>حركات الشهر</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inMonth(inventoryMovements).length}</strong></div></div></div>
+  </div>;
+}
+
+function ReportList({ title, empty, items }) { return <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>{title}</h3>{items.length === 0 ? <EmptyState icon="users" title={empty} /> : <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>{items.map((item) => <div key={item.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{item.name}</span><strong style={{ color: "#A34632" }}>{item.value}</strong></div>)}</div>}</div>; }
+
+// ---------- Main treasury ----------
+function TreasuryTab({ treasury, upsert }) {
+  const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+  const [openingBalance, setOpeningBalance] = useState(String(record.openingBalance || 0));
+  const [manualDirection, setManualDirection] = useState("in");
+  const [manualAmount, setManualAmount] = useState("");
+  const [manualDate, setManualDate] = useState(todayISO());
+  const [manualNote, setManualNote] = useState("");
+  const balance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+  const saveOpening = () => { if (!nonNegativeNumber(openingBalance)) { notify("أدخل مبلغًا أساسيًا غير سالب."); return; } upsert("treasury", { ...record, openingBalance: Number(openingBalance) }); notify("تم حفظ المبلغ الأساسي للخزينة.", "success"); };
+  const addManualTransaction = () => {
+    if (!positiveNumber(manualAmount)) { notify("أدخل مبلغًا موجبًا للحركة."); return; }
+    const transaction = { id: uid(), date: manualDate || todayISO(), direction: manualDirection, amount: Number(manualAmount), source: "manual", note: manualNote.trim() || (manualDirection === "in" ? "قبض يدوي" : "صرف يدوي") };
+    upsert("treasury", { ...record, transactions: [transaction, ...(record.transactions || [])] });
+    setManualAmount(""); setManualNote(""); setManualDate(todayISO());
+    notify("تم تسجيل حركة الخزينة.", "success");
+  };
+  return <div className="flex flex-col gap-5">
+    <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>الخزينة الرئيسية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>المبلغ الأساسي وجميع حركات القبض والصرف</p></div>
+    <div className="grid sm:grid-cols-3 gap-3"><StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent="#4B6350" /><StatCard icon="trendUp" label="إجمالي القبض" value={fmt((record.transactions || []).filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#6E8F72" /><StatCard icon="trendDown" label="إجمالي الصرف" value={fmt((record.transactions || []).filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#A34632" /></div>
+    <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>المبلغ الأساسي للخزينة</FieldLabel><div className="flex gap-2"><TextInput type="number" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} /><PrimaryButton onClick={saveOpening}>حفظ المبلغ الأساسي</PrimaryButton></div></div>
+    <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>إضافة حركة يدوية</FieldLabel><div className="grid sm:grid-cols-4 gap-2"><Select value={manualDirection} onChange={(e) => setManualDirection(e.target.value)}><option value="in">قبض</option><option value="out">صرف</option></Select><TextInput type="number" placeholder="المبلغ" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} /><TextInput type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} /><TextInput placeholder="البيان" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div><PrimaryButton onClick={addManualTransaction} disabled={!manualAmount}><Icon name="plus" size={15} /> تسجيل الحركة</PrimaryButton></div>
+    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date}</div></div><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span></div>)}</div>}
+  </div>;
+}
+
+// ---------- Inventory ----------
+function InventoryTab({ inventory, inventoryMovements, upsert, remove }) {
+  const [showAdd, setShowAdd] = useState(false);
+  const [pendingDelete, setPendingDelete] = useState(null);
+  const adjust = (item, delta) => {
+    const current = Number(item.quantity);
+    if (!Number.isFinite(current)) return;
+    upsert("inventory", { ...item, quantity: Math.max(0, current + delta) });
+    upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "manual", note: "تعديل يدوي" });
+  };
+  return (
+    <div className="flex flex-col gap-5">
+      <div className="flex items-center justify-between flex-wrap gap-3">
+        <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>المخزون</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>بضاعة مخزّنة في المكتب ومتابعة نقصها</p></div>
+        <PrimaryButton onClick={() => setShowAdd(true)}><Icon name="plus" size={16} /> مادة جديدة</PrimaryButton>
+      </div>
+      {inventory.length === 0 ? <EmptyState icon="package" title="لا توجد مواد مسجّلة في المخزون" /> : (
+        <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-3">
+          {inventory.map((i) => {
+            const low = Number(i.quantity) <= Number(i.minThreshold || 0);
+            return (
+              <div key={i.id} className="rounded-2xl border p-4 flex flex-col gap-3" style={{ borderColor: low ? "var(--warn-border)" : "var(--card-border)", background: low ? "var(--warn-bg)" : "var(--card-bg)" }}>
+                <div className="flex items-start justify-between">
+                  <div><div className="font-medium" style={{ color: "var(--text-strong)" }}>{i.name}</div>{low && <div className="text-xs flex items-center gap-1 mt-0.5" style={{ color: "#A34632" }}><Icon name="alert" size={11} /> منخفض</div>}</div>
+                  {pendingDelete === i.id ? <ConfirmInline onConfirm={() => { remove("inventory", i.id); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button onClick={() => setPendingDelete(i.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={14} /></button>}
+                </div>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <button onClick={() => adjust(i, -1)} className="w-7 h-7 rounded-lg border flex items-center justify-center" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}>−</button>
+                    <span className="text-lg font-bold min-w-[50px] text-center" style={{ color: "var(--text-strong)" }}>{fmt(i.quantity)}</span>
+                    <button onClick={() => adjust(i, 1)} className="w-7 h-7 rounded-lg border flex items-center justify-center" style={{ borderColor: "var(--card-border)", color: "var(--text-body)" }}>+</button>
+                  </div>
+                  <span className="text-xs" style={{ color: "var(--text-muted)" }}>{i.unit}</span>
+                </div>
+                <div className="text-xs" style={{ color: "var(--text-muted)" }}>الحد الأدنى: {fmt(i.minThreshold)} {i.unit}</div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>آخر حركات المخزن</h3>{(inventoryMovements || []).length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات مسجلة بعد</div> : [...inventoryMovements].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 10).map((movement) => <div key={movement.id} className="flex items-center justify-between py-2 border-b text-xs" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{movement.itemName} · {movement.note}</span><span style={{ color: movement.direction === "in" ? "#4B6350" : "#A34632" }}>{movement.direction === "in" ? "+" : "−"}{fmt(movement.quantity)} · {movement.date}</span></div>)}</div>
+      {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm existing={inventory} onAdd={(item) => { upsert("inventory", item); setShowAdd(false); }} /></Modal>}
+    </div>
+  );
+}
+function AddInventoryForm({ onAdd, existing = [] }) {
+  const [name, setName] = useState("");
+  const [quantity, setQuantity] = useState("");
+  const [unit, setUnit] = useState("كيس");
+  const [minThreshold, setMinThreshold] = useState("");
+  const submit = () => {
+    if (!name.trim() || !nonNegativeNumber(quantity || 0) || !nonNegativeNumber(minThreshold || 0)) { notify("أدخل كميات غير سالبة."); return; }
+    if (hasDuplicateName(existing, name)) { notify("هذه المادة موجودة مسبقًا."); return; }
+    onAdd({ id: uid(), name: name.trim(), quantity: Number(quantity || 0), unit, minThreshold: Number(minThreshold || 0) });
+  };
+  return (
+    <div className="flex flex-col gap-3">
+      <div><FieldLabel>اسم المادة</FieldLabel><TextInput list="item-suggestions-2" value={name} onChange={(e) => setName(e.target.value)} /><datalist id="item-suggestions-2">{ITEM_SUGGESTIONS.map((s) => <option key={s} value={s} />)}</datalist></div>
+      <div className="grid grid-cols-2 gap-3"><div><FieldLabel>الكمية الحالية</FieldLabel><TextInput type="number" value={quantity} onChange={(e) => setQuantity(e.target.value)} /></div><div><FieldLabel>الوحدة</FieldLabel><Select value={unit} onChange={(e) => setUnit(e.target.value)}><option>كيس</option><option>لتر</option><option>م</option><option>قطعة</option></Select></div></div>
+      <div><FieldLabel>حد التنبيه عند النقص</FieldLabel><TextInput type="number" value={minThreshold} onChange={(e) => setMinThreshold(e.target.value)} /></div>
+      <PrimaryButton onClick={submit} full disabled={!name.trim()}><Icon name="plus" size={16} /> إضافة إلى المخزون</PrimaryButton>
+    </div>
+  );
+}
+
+function App() {
+  const auth = useAuth();
+  if (!hasSupabaseConfig) return <><ToastHost /><FactoryApp /></>;
+  if (auth.loading) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center text-sm" style={{ background: "var(--bg)", color: "var(--text-muted)", fontFamily: "'Cairo', sans-serif" }}>جارٍ التحقق من الحساب...</div></>;
+  if (!auth.session) return <><ToastHost /><AuthScreen auth={auth} /></>;
+  if (auth.error || !auth.organization) return <><ToastHost /><div dir="rtl" className="min-h-screen flex items-center justify-center p-4 text-sm" style={{ background: "var(--bg)", color: "#A34632", fontFamily: "'Cairo', sans-serif" }}>تعذر تجهيز مساحة الشركة: {auth.error || "لم يتم العثور على المنظمة"}</div></>;
+  return <><ToastHost /><FactoryApp organizationId={auth.organization.organization_id || auth.organization.id} organizationCode={auth.organization.invite_code} email={auth.session.user.email} onSignOut={auth.signOut} /></>;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
