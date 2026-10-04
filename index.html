@@ -547,10 +547,12 @@ function useFactoryData(organizationId) {
   const remove = async (name, id) => {
     if (supabaseClient && organizationId) {
       const { error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id);
-      if (deleteError) { setError(deleteError.message); return; }
+      if (deleteError) { setError(deleteError.message); return false; }
       setData((prev) => ({ ...prev, [name]: (prev[name] || []).filter((d) => d.id !== id) }));
+      return true;
     } else {
       setData((prev) => { const next = (prev[name] || []).filter((d) => d.id !== id); saveLocal(name, next); return { ...prev, [name]: next }; });
+      return true;
     }
   };
 
@@ -738,6 +740,100 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
     }
   };
 
+  const handleDeleteInvoice = (invoice) => deleteInvoiceAndReverse(invoice, {
+    mode: invoice.direction || (invoice.supplierId ? "purchase" : "sale"), invoices, inventory, suppliers, customers, treasury, upsert, upsertBatch, remove,
+  });
+
+  const handleDeleteContactMovement = async (partyType, partyId, transactionId) => {
+    const collection = partyType === "supplier" ? "suppliers" : "customers";
+    const parties = partyType === "supplier" ? suppliers : customers;
+    const contact = parties.find((item) => item.id === partyId);
+    const transaction = contact?.transactions?.find((item) => item.id === transactionId);
+    if (!contact || !transaction) { notify("تعذر العثور على الحركة المراد حذفها."); return false; }
+    if (transaction.invoiceDebt || transaction.invoiceReturn) {
+      notify("هذه الحركة ناتجة عن فاتورة؛ احذف الفاتورة من قسم المبيعات أو المشتريات لعكسها بأمان.");
+      return false;
+    }
+    const currentTreasury = treasury?.[0];
+    let updatedTreasury = currentTreasury;
+    const paymentEvent = (currentTreasury?.transactions || []).find((item) => item.paymentId === transaction.id || item.id === transaction.id);
+    if (paymentEvent) {
+      const remaining = currentTreasury.transactions.filter((item) => item.id !== paymentEvent.id && item.paymentId !== transaction.id);
+      const balanceAfter = Number(currentTreasury.openingBalance || 0) + remaining.reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
+      if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن عكسها سيجعل رصيد الخزينة سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); return false; }
+      updatedTreasury = { ...currentTreasury, transactions: remaining };
+    }
+    const changedInvoices = new Map();
+    if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
+      const allocations = Array.isArray(transaction.allocations) && transaction.allocations.length
+        ? transaction.allocations
+        : transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : [];
+      const allocationTotals = new Map();
+      allocations.forEach((allocation) => allocationTotals.set(allocation.invoiceId, (allocationTotals.get(allocation.invoiceId) || 0) + Number(allocation.amount || 0)));
+      allocationTotals.forEach((allocatedAmount, invoiceId) => {
+        const invoice = invoices.find((item) => item.id === invoiceId);
+        if (!invoice) return;
+        const paidAmount = roundMoney(Math.max(0, getInvoicePaidAmount(invoice) - allocatedAmount));
+        const initialPaidAmount = getInvoiceInitialPaidAmount(invoice, transaction.customerPayment ? [contact] : [], transaction.supplierPayment || transaction.supplierReceipt ? [contact] : []);
+        const adjustedInitialPaidAmount = transaction.id === "invoice-payment-" + invoice.id ? roundMoney(Math.max(0, initialPaidAmount - allocatedAmount)) : initialPaidAmount;
+        changedInvoices.set(invoice.id, { ...invoice, paidAmount, initialPaidAmount: adjustedInitialPaidAmount, paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices) });
+      });
+    }
+    const records = [{ collection, record: { ...contact, transactions: contact.transactions.filter((item) => item.id !== transaction.id) } }];
+    if (updatedTreasury && updatedTreasury !== currentTreasury) records.push({ collection: "treasury", record: updatedTreasury });
+    records.push(...Array.from(changedInvoices.values()).map((invoice) => ({ collection: "invoices", record: invoice })));
+    const saved = await upsertBatch(records);
+    if (!saved) { notify("تعذر حفظ عكس الحركة؛ لم يتم حذفها. تحقق من الاتصال ثم حاول مجددًا."); return false; }
+    notify("تم حذف الحركة وعكس أثرها على الحسابات والفواتير والخزينة.", "success");
+    return true;
+  };
+
+  const handleDeleteCashMovement = async (transaction) => {
+    const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
+    if (transaction.paymentId || transaction.source === "contact-payment") {
+      const transactionId = transaction.paymentId || transaction.id;
+      const partyType = transaction.partyType;
+      const contact = (partyType === "supplier" ? suppliers : customers).find((item) => item.id === transaction.partyId)
+        || customers.find((item) => item.id === transaction.partyId)?.transactions?.some((item) => item.id === transactionId) && customers.find((item) => item.id === transaction.partyId)
+        || suppliers.find((item) => item.id === transaction.partyId)?.transactions?.some((item) => item.id === transactionId) && suppliers.find((item) => item.id === transaction.partyId);
+      const resolvedType = contact && suppliers.some((item) => item.id === contact.id) ? "supplier" : "customer";
+      if (!contact) { notify("تعذر العثور على قيد العميل أو المورد المرتبط بهذا السند."); return false; }
+      return handleDeleteContactMovement(resolvedType, contact.id, transactionId);
+    }
+    if (transaction.invoiceId && (transaction.source === "invoice" || transaction.source === "invoice-return")) {
+      const invoice = invoices.find((item) => item.id === transaction.invoiceId);
+      if (invoice && transaction.source === "invoice") {
+        const paymentId = "invoice-payment-" + invoice.id;
+        const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
+        const customerPayment = customer?.transactions?.find((item) => item.id === paymentId && item.customerPayment);
+        if (customerPayment) return handleDeleteContactMovement("customer", customer.id, paymentId);
+        const supplier = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId));
+        const supplierPayment = supplier?.transactions?.find((item) => item.id === paymentId && item.supplierPayment);
+        if (supplierPayment) return handleDeleteContactMovement("supplier", supplier.id, paymentId);
+      }
+      if (invoice) return handleDeleteInvoice(invoice);
+    }
+    if (transaction.source !== "manual" && !transaction.expenseId && !(transaction.invoiceId && (transaction.source === "invoice" || transaction.source === "invoice-return"))) {
+      notify("لا يمكن حذف هذه الحركة منفردة؛ احذفها من القسم الذي أنشأها حتى تنعكس القيود المرتبطة معها.");
+      return false;
+    }
+    const remaining = currentTreasury.transactions.filter((item) => item.id !== transaction.id);
+    const balanceAfter = Number(currentTreasury.openingBalance || 0) + remaining.reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
+    if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن رصيد الخزينة سيصبح سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); return false; }
+    const saved = await upsert("treasury", { ...currentTreasury, transactions: remaining }, { throwOnError: false });
+    if (!saved) { notify("تعذر حفظ حذف الحركة؛ حاول مجددًا."); return false; }
+    if (transaction.expenseId) {
+      const removed = await remove("expenses", transaction.expenseId);
+      if (!removed) {
+        const restored = await upsert("treasury", currentTreasury, { throwOnError: false });
+        notify(restored ? "تعذر حذف المصروف؛ أُعيدت حركة الخزينة كما كانت." : "تعذر حذف المصروف وعكس الخزينة. راجع سجل المصروفات والخزينة للتحقق من التطابق.");
+        return false;
+      }
+    }
+    notify(transaction.expenseId ? "تم حذف المصروف وحركته من الخزينة." : "تم حذف حركة الخزينة.", "success");
+    return true;
+  };
+
   const NAV = [
     { key: "dashboard", label: "لوحة التحكم", icon: "dashboard" },
     { key: "purchases", label: "المشتريات", icon: "truck" },
@@ -827,16 +923,16 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         {tab === "dashboard" && (
           <Dashboard invoices={invoices} lowStock={lowStock} customerDebt={customerDebt} supplierDebt={supplierDebt} monthInvoices={monthInvoices} treasury={treasury} goInvoices={() => setTab("purchases")} />
         )}
-        {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
-        {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} remove={remove} />}
-        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
-        {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
+        {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
+        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteContactMovement={handleDeleteContactMovement} onDeleteCashMovement={handleDeleteCashMovement} />}
+        {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} onDeleteCashMovement={handleDeleteCashMovement} />}
         {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
-            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} />
+            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />
         )}
-        {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} invoices={invoices} upsert={upsert} remove={remove} />}
+        {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} invoices={invoices} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteInvoice={handleDeleteInvoice} />}
         {tab === "reports" && <MillReportsTab month={reportMonth} setMonth={setReportMonth} invoices={invoices} expenses={expenses} customers={customers} suppliers={suppliers} inventory={inventory} inventoryMovements={inventoryMovements} treasury={treasury} />}
       </main>
     </div>
@@ -1338,7 +1434,71 @@ function ProjectMeasurements({ project, update }) {
 }
 
 // ---------- Invoices (with line items) ----------
-function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury, upsert, remove }) {
+async function deleteInvoiceAndReverse(invoice, { mode, invoices, inventory, suppliers, customers, treasury, upsert, upsertBatch, remove }) {
+  if (invoices.some((record) => record.isReturn && record.returnForInvoiceId === invoice.id)) {
+    notify("لا يمكن حذف الفاتورة الأصلية قبل حذف أو معالجة مرتجعاتها.");
+    return false;
+  }
+  const linkedCustomerPayments = customers.find((item) => item.id === (invoice.customerId || invoice.contactId))?.transactions || [];
+  const linkedSupplierPayments = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId))?.transactions || [];
+  if (linkedCustomerPayments.some((transaction) => transaction.customerPayment && transaction.id !== "invoice-payment-" + invoice.id && (transaction.invoiceId === invoice.id || (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id)))
+    || linkedSupplierPayments.some((transaction) => (transaction.supplierPayment || transaction.supplierReceipt) && transaction.id !== "invoice-payment-" + invoice.id && (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id))) {
+    notify("لا يمكن حذف الفاتورة قبل حذف دفعاتها المرتبطة.");
+    return false;
+  }
+  const stockChanges = new Map();
+  const inventoryValueChanges = new Map();
+  (invoice.items || []).forEach((line) => {
+    const item = inventory.find((entry) => entry.id === line.inventoryId || (!line.inventoryId && normalizeName(entry.name) === normalizeName(line.name)));
+    if (!item) return;
+    const direction = invoice.direction || (mode === "purchase" ? "purchase" : "sale");
+    const delta = (direction === "purchase" ? -Number(line.quantity || 0) : Number(line.quantity || 0)) * (invoice.isReturn ? -1 : 1);
+    stockChanges.set(item.id, (stockChanges.get(item.id) || 0) + delta);
+    const cost = Number(line.costUnitPrice ?? (direction === "purchase" ? line.unitPrice : item.averageCost) ?? 0);
+    inventoryValueChanges.set(item.id, (inventoryValueChanges.get(item.id) || 0) - Number(line.quantity || 0) * cost * (direction === "purchase" ? 1 : -1) * (invoice.isReturn ? -1 : 1));
+  });
+  for (const [itemId, delta] of stockChanges) {
+    const item = inventory.find((entry) => entry.id === itemId);
+    if (Number(item.quantity || 0) + delta < 0) {
+      notify(`لا يمكن حذف الفاتورة: مخزون «${item.name}» سيصبح سالبًا.`);
+      return false;
+    }
+  }
+  const currentTreasury = treasury?.[0];
+  if (currentTreasury) {
+    const remainingTransactions = (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id);
+    const balanceAfter = Number(currentTreasury.openingBalance || 0) + remainingTransactions.reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
+    if (balanceAfter < 0) {
+      notify("لا يمكن حذف الفاتورة لأن عكس حركتها سيجعل رصيد الخزينة سالبًا. احذف أو صحح الحركات اللاحقة أولًا.");
+      return false;
+    }
+  }
+  const records = [];
+  for (const [itemId, delta] of stockChanges) {
+    const item = inventory.find((entry) => entry.id === itemId);
+    const quantity = roundMoney(Number(item.quantity || 0) + delta);
+    const inventoryValue = Number(item.quantity || 0) * Number(item.averageCost || 0) + (inventoryValueChanges.get(itemId) || 0);
+    records.push({ collection: "inventory", record: { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 } });
+    records.push({ collection: "inventoryMovements", record: { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice-delete", invoiceId: invoice.id, note: "عكس حذف الفاتورة" } });
+  }
+  if (currentTreasury) records.push({ collection: "treasury", record: { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id) } });
+  const supplier = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId));
+  if (supplier) records.push({ collection: "suppliers", record: { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) } });
+  const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
+  if (customer) records.push({ collection: "customers", record: { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) } });
+  const deleted = await remove("invoices", invoice.id);
+  if (!deleted) { notify("تعذر حذف الفاتورة؛ لم يتم عكس المخزون أو القيود."); return false; }
+  const saved = await upsertBatch(records);
+  if (!saved) {
+    const restored = await upsert("invoices", invoice, { throwOnError: false });
+    notify(restored ? "تعذر حفظ عكس الفاتورة؛ أُعيدت الفاتورة إلى السجل دون تغيير القيود." : "فشل حذف الفاتورة وعكس القيود. تحقق يدويًا من الفاتورة والمخزون والخزينة.");
+    return false;
+  }
+  notify("تم حذف الفاتورة وعكس المخزون والحساب والخزينة.", "success");
+  return true;
+}
+
+function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury, upsert, upsertBatch, remove }) {
   const [showAdd, setShowAdd] = useState(false);
   const [creatingReturn, setCreatingReturn] = useState(false);
   const [editingInvoice, setEditingInvoice] = useState(null);
@@ -1356,50 +1516,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
   });
   const total = filtered.reduce((s, i) => s + Number(i.amount || 0) * (i.isReturn ? -1 : 1), 0);
   const sorted = [...filtered].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-  const deleteInvoice = (invoice) => {
-    if (invoices.some((record) => record.isReturn && record.returnForInvoiceId === invoice.id)) {
-      notify("لا يمكن حذف الفاتورة الأصلية قبل حذف أو معالجة مرتجعاتها.");
-      return false;
-    }
-    const linkedCustomerPayments = customers.find((item) => item.id === (invoice.customerId || invoice.contactId))?.transactions || [];
-    const linkedSupplierPayments = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId))?.transactions || [];
-    if (linkedCustomerPayments.some((transaction) => transaction.customerPayment && transaction.id !== "invoice-payment-" + invoice.id && (transaction.invoiceId === invoice.id || (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id)))
-      || linkedSupplierPayments.some((transaction) => (transaction.supplierPayment || transaction.supplierReceipt) && transaction.id !== "invoice-payment-" + invoice.id && (transaction.allocations || []).some((allocation) => allocation.invoiceId === invoice.id))) {
-      notify("لا يمكن حذف الفاتورة قبل حذف دفعاتها المرتبطة.");
-      return false;
-    }
-    const stockChanges = new Map();
-    const inventoryValueChanges = new Map();
-    (invoice.items || []).forEach((line) => {
-      const item = inventory.find((entry) => entry.id === line.inventoryId || (!line.inventoryId && normalizeName(entry.name) === normalizeName(line.name)));
-      if (!item) return;
-      const delta = (mode === "purchase" ? -Number(line.quantity || 0) : Number(line.quantity || 0)) * (invoice.isReturn ? -1 : 1);
-      stockChanges.set(item.id, (stockChanges.get(item.id) || 0) + delta);
-      const cost = Number(line.costUnitPrice ?? (mode === "purchase" ? line.unitPrice : item.averageCost) ?? 0);
-      inventoryValueChanges.set(item.id, (inventoryValueChanges.get(item.id) || 0) - Number(line.quantity || 0) * cost * (mode === "purchase" ? 1 : -1) * (invoice.isReturn ? -1 : 1));
-    });
-    for (const [itemId, delta] of stockChanges) {
-      const item = inventory.find((entry) => entry.id === itemId);
-      if (Number(item.quantity || 0) + delta < 0) {
-        notify(`لا يمكن حذف الفاتورة: مخزون «${item.name}» سيصبح سالبًا.`);
-        return false;
-      }
-    }
-    remove("invoices", invoice.id);
-    for (const [itemId, delta] of stockChanges) {
-      const item = inventory.find((entry) => entry.id === itemId);
-      const quantity = roundMoney(Number(item.quantity || 0) + delta);
-      const inventoryValue = Number(item.quantity || 0) * Number(item.averageCost || 0) + (inventoryValueChanges.get(itemId) || 0);
-      upsert("inventory", { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 });
-      upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "invoice-delete", invoiceId: invoice.id, note: "عكس حذف الفاتورة" });
-    }
-    const currentTreasury = treasury?.[0];
-    if (currentTreasury) upsert("treasury", { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id) });
-    const supplier = suppliers.find((item) => item.id === invoice.supplierId);
-    if (supplier) upsert("suppliers", { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) });
-    const customer = customers.find((item) => item.id === invoice.customerId);
-    if (customer) upsert("customers", { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) });
-  };
+  const deleteInvoice = (invoice) => deleteInvoiceAndReverse(invoice, { mode, invoices, inventory, suppliers, customers, treasury, upsert, upsertBatch, remove });
   const syncSupplierDebt = (supplierId, transactionId, transaction) => {
     if (!supplierId || !transactionId) return;
     const supplier = suppliers.find((s) => s.id === supplierId);
@@ -1542,7 +1659,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                       </div>
                     )}
                     <div className="flex justify-end">
-                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={() => { deleteInvoice(inv); setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{mode === "sale" && <button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={async () => { if (await deleteInvoice(inv)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{mode === "sale" && <button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
                     </div>
                   </div>
                 )}
@@ -1843,7 +1960,7 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
 }
 
 // ---------- Accounts (customers / workers / suppliers ledger) ----------
-function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, treasury, upsert, remove, projects = [], income = [], onOpenProject }) {
+function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, treasury, upsert, upsertBatch, remove, projects = [], income = [], onOpenProject }) {
   const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
   const current = KINDS[sub];
   return (
@@ -1856,19 +1973,21 @@ function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, tre
           </button>
         ))}
       </div>
-      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} treasury={treasury} upsert={upsert} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
     </div>
   );
 }
 
-function ContactsList({ kind, label, icon, collection, data, invoices, treasury, upsert, remove, projects, income, onOpenProject }) {
+function ContactsList({ kind, label, icon, collection, data, invoices, treasury, upsert, upsertBatch, remove, projects, income, onOpenProject }) {
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
   const filtered = data.filter((c) => !query || c.name.includes(query));
   const open = data.find((c) => c.id === openId);
   const relatedProjects = null;
-  const hasLinkedInvoices = (contact) => invoices.some((invoice) => (invoice.contactId || invoice.customerId || invoice.supplierId) === contact.id);
+  const hasLinkedActivity = (contact) => invoices.some((invoice) => (invoice.contactId || invoice.customerId || invoice.supplierId) === contact.id)
+    || (contact.transactions || []).length > 0
+    || (treasury || []).some((record) => (record.transactions || []).some((transaction) => transaction.partyId === contact.id));
   return (
     <div className="flex flex-col gap-4">
       <div className="flex items-center gap-3 flex-wrap">
@@ -1900,7 +2019,7 @@ function ContactsList({ kind, label, icon, collection, data, invoices, treasury,
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} icon={icon} invoices={invoices} treasury={treasury} upsert={upsert} canDelete={!hasLinkedInvoices(open)} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onTreasurySave={(record) => upsert("treasury", record)} onInvoiceSave={(invoice) => upsert("invoices", invoice)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
+      {open && <ContactDetail contact={open} label={label} collection={collection} icon={icon} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} canDelete={!hasLinkedActivity(open)} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onTreasurySave={(record) => upsert("treasury", record)} onInvoiceSave={(invoice) => upsert("invoices", invoice)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
     </div>
   );
 }
@@ -1924,7 +2043,7 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, canDelete = true, onClose, onSave, onTreasurySave, onInvoiceSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
+function ContactDetail({ contact, label, collection, icon, invoices = [], treasury, upsert, upsertBatch, canDelete = true, onClose, onSave, onTreasurySave, onInvoiceSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [statementStart, setStatementStart] = useState("");
@@ -1953,14 +2072,24 @@ function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, 
   const projectRemaining = projectTotals.remaining;
   const grandTotal = balance + projectRemaining - projectTotals.surplus;
 
-  const removeTx = (id) => {
+  const removeTx = async (id) => {
     const transaction = transactions.find((item) => item.id === id);
-    if (!transaction || transaction.invoiceDebt) { setPendingTxDelete(null); return; }
-    const remainingTransactions = transactions.filter((t) => t.id !== id);
-    update({ transactions: remainingTransactions });
+    if (!transaction || transaction.invoiceDebt || transaction.invoiceReturn) { setPendingTxDelete(null); return; }
+    const records = [];
     if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
       const record = treasury?.[0];
-      if (record) onTreasurySave({ ...record, transactions: (record.transactions || []).filter((item) => item.paymentId !== id && item.id !== id) });
+      const cashEvent = (record?.transactions || []).find((item) => item.paymentId === id || item.id === id);
+      if (record && cashEvent) {
+        const remainingCash = record.transactions.filter((item) => item.id !== cashEvent.id && item.paymentId !== id);
+        const balanceAfter = Number(record.openingBalance || 0) + remainingCash.reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
+        if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن رصيد الخزينة سيصبح سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); setPendingTxDelete(null); return; }
+        records.push({ collection: "treasury", record: { ...record, transactions: remainingCash } });
+      }
+    }
+    const remainingTransactions = transactions.filter((t) => t.id !== id);
+    const updatedContact = { ...local, transactions: remainingTransactions };
+    records.unshift({ collection, record: updatedContact });
+    if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
       const allocations = Array.isArray(transaction.allocations) && transaction.allocations.length ? transaction.allocations : (transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : []);
       const allocationTotals = new Map();
       allocations.forEach((allocation) => allocationTotals.set(allocation.invoiceId, (allocationTotals.get(allocation.invoiceId) || 0) + Number(allocation.amount || 0)));
@@ -1972,15 +2101,19 @@ function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, 
         const adjustedInitialPaidAmount = transaction.id === "invoice-payment-" + invoice.id
           ? roundMoney(Math.max(0, initialPaidAmount - allocatedAmount))
           : initialPaidAmount;
-        onInvoiceSave({
+        records.push({ collection: "invoices", record: {
           ...invoice,
           paidAmount,
           initialPaidAmount: adjustedInitialPaidAmount,
           paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices),
-        });
+        } });
       });
     }
+    const saved = await upsertBatch(records);
+    if (!saved) { notify("تعذر حفظ حذف الحركة؛ لم يتم تعديل الحساب أو الفاتورة."); setPendingTxDelete(null); return; }
+    setLocal(updatedContact);
     setPendingTxDelete(null);
+    notify("تم حذف الحركة وعكس أثرها.", "success");
   };
 
   return (
@@ -2094,7 +2227,7 @@ function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, 
                     <Icon name={t.type === "debit" ? "trendUp" : "trendDown"} size={14} color={t.type === "debit" ? "#A34632" : "#4B6350"} />
                     <div className="min-w-0"><div className="text-sm truncate" style={{ color: "var(--text-body)" }}>{t.note || (t.type === "debit" ? "زيادة دين" : "تسديد")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{t.date}{t.invoiceId ? " · فاتورة" : ""}</div></div>
                   </div>
-                  <span className="font-medium" style={{ color: t.type === "debit" ? "#A34632" : "#4B6350" }}>{t.type === "debit" ? "+" : "−"}{fmt(t.amount)}</span>
+                  <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: t.type === "debit" ? "#A34632" : "#4B6350" }}>{t.type === "debit" ? "+" : "−"}{fmt(t.amount)}</span>{!t.invoiceDebt && !t.invoiceReturn && (pendingTxDelete === t.id ? <ConfirmInline label="حذف وعكس؟" onConfirm={() => removeTx(t.id)} onCancel={() => setPendingTxDelete(null)} /> : <button aria-label="حذف الحركة" title="حذف الحركة وعكس أثرها" onClick={() => setPendingTxDelete(t.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div>
                 </div>
               ))}
             </div>
@@ -2185,7 +2318,7 @@ function ContactDetail({ contact, label, icon, invoices = [], treasury, upsert, 
         )}
 
         <div className="pt-3 border-t flex justify-end" style={{ borderColor: "var(--card-border)" }}>
-          {!canDelete ? <span className="text-xs" style={{ color: "var(--text-muted)" }}>لا يمكن حذف جهة مرتبطة بفواتير.</span> : confirmDelete ? <ConfirmInline label="حذف نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف</button>}
+          {!canDelete ? <span className="text-xs" style={{ color: "var(--text-muted)" }}>لا يمكن حذف جهة لها فواتير أو حركات مسجلة؛ احذف الفواتير أو الحركات المرتبطة أولًا.</span> : confirmDelete ? <ConfirmInline label="حذف نهائيًا؟" onConfirm={onDelete} onCancel={() => setConfirmDelete(false)} /> : <button onClick={() => setConfirmDelete(true)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف</button>}
         </div>
       </div>
     </Modal>
@@ -2484,11 +2617,23 @@ function DailyExpensesTab({ expenses, treasury, upsert, remove }) {
     upsert("treasury", { ...currentTreasury, transactions: [transaction, ...retainedTransactions] });
     setShowForm(false); setEditing(null);
   };
-  const deleteExpense = (expense) => {
-    remove("expenses", expense.id);
+  const deleteExpense = async (expense) => {
     const currentTreasury = treasury?.[0];
-    if (currentTreasury) upsert("treasury", { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id) });
+    const hasLinkedCash = (currentTreasury?.transactions || []).some((item) => item.expenseId === expense.id);
+    if (currentTreasury && hasLinkedCash) {
+      const saved = await upsert("treasury", { ...currentTreasury, transactions: currentTreasury.transactions.filter((item) => item.expenseId !== expense.id) }, { throwOnError: false });
+      if (!saved) { notify("تعذر عكس حركة المصروف من الخزينة؛ لم يتم حذف المصروف."); setPendingDelete(null); return; }
+    }
+    const removed = await remove("expenses", expense.id);
+    if (!removed && currentTreasury && hasLinkedCash) {
+      const restored = await upsert("treasury", currentTreasury, { throwOnError: false });
+      notify(restored ? "تعذر حذف المصروف؛ أُعيدت حركة الخزينة كما كانت." : "تعذر حذف المصروف وعكس الخزينة. راجع سجل المصروفات والخزينة للتحقق من التطابق.");
+      setPendingDelete(null);
+      return;
+    }
+    if (!removed) { notify("تعذر حذف المصروف؛ حاول مجددًا."); setPendingDelete(null); return; }
     setPendingDelete(null);
+    notify("تم حذف المصروف وحركته من الخزينة.", "success");
   };
   const sorted = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   return <div className="flex flex-col gap-5">
@@ -2631,12 +2776,13 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
 }
 
 // ---------- Cashflow overview ----------
-function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [], upsertBatch }) {
+function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [], upsertBatch, onDeleteContactMovement, onDeleteCashMovement }) {
   const [paymentType, setPaymentType] = useState(null);
+  const [pendingDelete, setPendingDelete] = useState(null);
   const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
   const treasuryRows = [...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-  const customerRows = customers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyName: contact.name, partyLabel: "عميل", kindLabel: tx.customerPayment ? "قبض من العميل" : tx.customerRefund ? "صرف للعميل" : tx.type === "debit" ? "زيادة دين" : "تسديد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
-  const supplierRows = suppliers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyName: contact.name, partyLabel: "مورد", kindLabel: tx.supplierPayment ? "صرف للمورد" : tx.supplierReceipt ? "قبض من المورد" : tx.type === "credit" ? "تسوية" : "زيادة رصيد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const customerRows = customers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyId: contact.id, partyType: "customer", partyName: contact.name, partyLabel: "عميل", kindLabel: tx.customerPayment ? "قبض من العميل" : tx.customerRefund ? "صرف للعميل" : tx.type === "debit" ? "زيادة دين" : "تسديد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const supplierRows = suppliers.flatMap((contact) => (contact.transactions || []).map((tx) => ({ ...tx, partyId: contact.id, partyType: "supplier", partyName: contact.name, partyLabel: "مورد", kindLabel: tx.supplierPayment ? "صرف للمورد" : tx.supplierReceipt ? "قبض من المورد" : tx.type === "credit" ? "تسوية" : "زيادة رصيد" }))).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
   const totalIn = treasuryRows.filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
   const totalOut = treasuryRows.filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0);
   const balance = Number(record.openingBalance || 0) + totalIn - totalOut;
@@ -2658,9 +2804,9 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
               <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
                 <div className="min-w-0">
                   <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div>
-                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.source === "manual" ? "يدوي" : tx.source || "حركة يدوية"}</div>
+                  <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source === "manual" ? "يدوي" : tx.source || "حركة يدوية"}</div>
                 </div>
-                <span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>
+                <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{pendingDelete === "cash:" + tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete("cash:" + tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div>
               </div>
             ))}
           </div>
@@ -2672,13 +2818,13 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
           <div className="mb-3 text-sm font-semibold" style={{ color: "var(--text-body)" }}>حركات العملاء</div>
           {customerRows.length === 0 ? <EmptyState icon="users" title="لا توجد حركات عملاء" /> : (
             <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
-              {customerRows.slice(0, 12).map((tx) => (
+              {customerRows.map((tx) => (
                 <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
                   <div className="min-w-0">
                     <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.partyName}</div>
                     <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"}</div>
                   </div>
-                  <span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>
+                  <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>{!tx.invoiceDebt && !tx.invoiceReturn && (pendingDelete === "customer:" + tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteContactMovement("customer", tx.partyId, tx.id)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة العميل" title="حذف الحركة وعكس أثرها" onClick={() => setPendingDelete("customer:" + tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div>
                 </div>
               ))}
             </div>
@@ -2689,13 +2835,13 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
           <div className="mb-3 text-sm font-semibold" style={{ color: "var(--text-body)" }}>حركات الموردين</div>
           {supplierRows.length === 0 ? <EmptyState icon="briefcase" title="لا توجد حركات موردين" /> : (
             <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
-              {supplierRows.slice(0, 12).map((tx) => (
+              {supplierRows.map((tx) => (
                 <div key={tx.id} className="flex items-center justify-between py-2.5 gap-3" style={{ borderColor: "var(--divider)" }}>
                   <div className="min-w-0">
                     <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.partyName}</div>
                     <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"}</div>
                   </div>
-                  <span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>
+                  <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: tx.type === "credit" ? "#4B6350" : "#A34632" }}>{tx.kindLabel} {fmt(tx.amount)}</span>{!tx.invoiceDebt && !tx.invoiceReturn && (pendingDelete === "supplier:" + tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteContactMovement("supplier", tx.partyId, tx.id)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة المورد" title="حذف الحركة وعكس أثرها" onClick={() => setPendingDelete("supplier:" + tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div>
                 </div>
               ))}
             </div>
@@ -2708,7 +2854,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
 }
 
 // ---------- Main treasury ----------
-function TreasuryTab({ treasury, upsert }) {
+function TreasuryTab({ treasury, upsert, onDeleteCashMovement }) {
   const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
   const [openingBalance, setOpeningBalance] = useState(String(record.openingBalance || 0));
   const [manualDirection, setManualDirection] = useState("in");
@@ -2739,29 +2885,29 @@ function TreasuryTab({ treasury, upsert }) {
     setEditingId(transaction.id); setManualDirection(transaction.direction); setManualAmount(String(transaction.amount));
     setManualDate(transaction.date || todayISO()); setManualNote(transaction.note || "");
   };
-  const deleteManualTransaction = (id) => {
-    upsert("treasury", { ...record, transactions: (record.transactions || []).filter((tx) => tx.id !== id) });
-    setPendingDelete(null);
-  };
   return <div className="flex flex-col gap-5">
     <div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>الخزينة الرئيسية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>المبلغ الأساسي وجميع حركات القبض والصرف</p></div>
     <div className="grid sm:grid-cols-3 gap-3"><StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent={balance >= 0 ? "#4B6350" : "#A34632"} /> <StatCard icon="trendUp" label="إجمالي القبض" value={fmt((record.transactions || []).filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#6E8F72" /><StatCard icon="trendDown" label="إجمالي الصرف" value={fmt((record.transactions || []).filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#A34632" /></div>
     <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>المبلغ الأساسي للخزينة</FieldLabel><div className="flex gap-2"><TextInput type="number" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} /><PrimaryButton onClick={saveOpening}>حفظ المبلغ الأساسي</PrimaryButton></div></div>
     <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>{editingId ? "تعديل حركة يدوية" : "إضافة حركة يدوية"}</FieldLabel><div className="grid sm:grid-cols-4 gap-2"><Select value={manualDirection} onChange={(e) => setManualDirection(e.target.value)}><option value="in">قبض</option><option value="out">صرف</option></Select><TextInput type="number" placeholder="المبلغ" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} /><TextInput type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} /><TextInput placeholder="البيان" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div><div className="flex gap-2"><PrimaryButton onClick={addManualTransaction} disabled={!manualAmount}><Icon name="plus" size={15} /> {editingId ? "حفظ التعديل" : "تسجيل الحركة"}</PrimaryButton>{editingId && <GhostButton onClick={() => { setEditingId(null); setManualAmount(""); setManualNote(""); }}>إلغاء</GhostButton>}</div></div>
-    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b gap-3" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{tx.source === "manual" && (pendingDelete === tx.id ? <ConfirmInline onConfirm={() => deleteManualTransaction(tx.id)} onCancel={() => setPendingDelete(null)} /> : <><button onClick={() => editManualTransaction(tx)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button><button onClick={() => setPendingDelete(tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button></>)}</div></div>)}</div>}
+    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b gap-3" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date} · {tx.source === "manual" ? "يدوي" : tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source || "حركة"}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{tx.source === "manual" && <button onClick={() => editManualTransaction(tx)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button>}{pendingDelete === tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete(tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div></div>)}</div>}
   </div>;
 }
 
 // ---------- Inventory ----------
-function InventoryTab({ inventory, inventoryMovements, invoices, upsert, remove }) {
+function InventoryTab({ inventory, inventoryMovements, invoices, upsert, upsertBatch, remove, onDeleteInvoice }) {
   const [showAdd, setShowAdd] = useState(false);
   const [pendingDelete, setPendingDelete] = useState(null);
-  const adjust = (item, delta) => {
+  const [pendingMovementDelete, setPendingMovementDelete] = useState(null);
+  const adjust = async (item, delta) => {
     const current = Number(item.quantity);
     if (!Number.isFinite(current)) return;
     if (current + delta < 0) { notify(`لا يمكن خفض مخزون «${item.name}» إلى أقل من صفر.`); return; }
-    upsert("inventory", { ...item, quantity: Math.max(0, current + delta) });
-    upsert("inventoryMovements", { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "manual", note: "تعديل يدوي" });
+    const saved = await upsertBatch([
+      { collection: "inventory", record: { ...item, quantity: Math.max(0, current + delta) } },
+      { collection: "inventoryMovements", record: { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: "manual", note: "تعديل يدوي" } },
+    ]);
+    if (!saved) notify("تعذر حفظ تعديل المخزون وحركته؛ لم يتم تطبيق التعديل.");
   };
   const deleteItem = (item) => {
     if (invoices.some((invoice) => (invoice.items || []).some((line) => line.inventoryId === item.id || (!line.inventoryId && normalizeName(line.name) === normalizeName(item.name))))) {
@@ -2769,8 +2915,37 @@ function InventoryTab({ inventory, inventoryMovements, invoices, upsert, remove 
       setPendingDelete(null);
       return;
     }
+    if ((inventoryMovements || []).some((movement) => movement.itemId === item.id)) {
+      notify(`لا يمكن حذف «${item.name}» لوجود سجل حركات مخزون مرتبط بها.`);
+      setPendingDelete(null);
+      return;
+    }
     remove("inventory", item.id);
     setPendingDelete(null);
+  };
+  const deleteMovement = async (movement) => {
+    if (movement.source === "invoice" || movement.source === "invoice-return") {
+      const invoice = invoices.find((item) => item.id === movement.invoiceId);
+      if (invoice) await onDeleteInvoice(invoice);
+      setPendingMovementDelete(null);
+      return;
+    }
+    if (movement.source !== "manual" || movement.voided) { notify("هذا قيد نظامي مرتبط بفاتورة أو بعكس سابق ولا يمكن حذفه منفردًا."); setPendingMovementDelete(null); return; }
+    const item = inventory.find((entry) => entry.id === movement.itemId);
+    if (!item) { notify("تعذر العثور على مادة المخزون المرتبطة بالحركة."); setPendingMovementDelete(null); return; }
+    const quantity = Number(movement.quantity || 0);
+    const delta = movement.direction === "in" ? -quantity : quantity;
+    if (Number(item.quantity || 0) + delta < 0) { notify("لا يمكن عكس الزيادة لأن كمية المخزون الحالية لا تكفي؛ سجّل أو صحح الحركات اللاحقة أولًا."); setPendingMovementDelete(null); return; }
+    const nextQuantity = roundMoney(Number(item.quantity || 0) + delta);
+    const reversal = { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity, source: "manual-reversal", reversesMovementId: movement.id, note: "عكس حركة يدوية" };
+    const records = [
+      { collection: "inventory", record: { ...item, quantity: nextQuantity, averageCost: nextQuantity === 0 ? 0 : Number(item.averageCost || 0) } },
+      { collection: "inventoryMovements", record: { ...movement, voided: true, reversalMovementId: reversal.id } },
+      { collection: "inventoryMovements", record: reversal },
+    ];
+    if (!await upsertBatch(records)) { notify("تعذر حفظ عكس حركة المخزون؛ لم يتم تطبيقه."); setPendingMovementDelete(null); return; }
+    notify("تم عكس حركة المخزون وتحديث الكمية مع حفظ قيد العكس.", "success");
+    setPendingMovementDelete(null);
   };
   return (
     <div className="flex flex-col gap-5">
@@ -2802,8 +2977,8 @@ function InventoryTab({ inventory, inventoryMovements, invoices, upsert, remove 
           })}
         </div>
       )}
-      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>آخر حركات المخزن</h3>{(inventoryMovements || []).length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات مسجلة بعد</div> : [...inventoryMovements].sort((a, b) => (b.date || "").localeCompare(a.date || "")).slice(0, 10).map((movement) => <div key={movement.id} className="flex items-center justify-between py-2 border-b text-xs" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{movement.itemName} · {movement.note}</span><span style={{ color: movement.direction === "in" ? "#4B6350" : "#A34632" }}>{movement.direction === "in" ? "+" : "−"}{fmt(movement.quantity)} · {movement.date}</span></div>)}</div>
-      {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm existing={inventory} onAdd={(item) => { upsert("inventory", item); setShowAdd(false); }} /></Modal>}
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>سجل حركات المخزن</h3>{(inventoryMovements || []).length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات مسجلة بعد</div> : <div className="max-h-96 overflow-y-auto">{[...inventoryMovements].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((movement) => { const linkedInvoice = (movement.source === "invoice" || movement.source === "invoice-return") ? invoices.find((invoice) => invoice.id === movement.invoiceId) : null; const deleteKey = "movement:" + movement.id; const movementSource = linkedInvoice ? `فاتورة #${linkedInvoice.invoiceNumber || linkedInvoice.id}` : movement.source === "manual-reversal" || movement.source === "invoice-delete" ? "قيد عكس نظامي" : movement.source === "invoice" || movement.source === "invoice-return" ? "فاتورة محذوفة (سجل تاريخي)" : "يدوي"; return <div key={movement.id} className="flex items-center justify-between gap-3 py-2 border-b text-xs" style={{ borderColor: "var(--divider)" }}><div className="min-w-0"><div style={{ color: "var(--text-body)" }}>{movement.itemName} · {movement.note}{movement.voided ? " · ملغاة" : ""}</div><div style={{ color: "var(--text-muted)" }}>{movement.date} · {movementSource}</div></div><div className="flex items-center gap-2 shrink-0"><span style={{ color: movement.direction === "in" ? "#4B6350" : "#A34632" }}>{movement.direction === "in" ? "+" : "−"}{fmt(movement.quantity)}</span>{(movement.source === "manual" && !movement.voided || linkedInvoice) && (pendingMovementDelete === deleteKey ? <ConfirmInline label={linkedInvoice ? "حذف الفاتورة؟" : "عكس الحركة؟"} onConfirm={() => deleteMovement(movement)} onCancel={() => setPendingMovementDelete(null)} /> : <button aria-label="حذف حركة المخزون" title={linkedInvoice ? "حذف الفاتورة وعكس المخزون والحسابات" : "عكس حركة المخزون"} onClick={() => setPendingMovementDelete(deleteKey)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div></div>; })}</div>}</div>
+      {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm existing={inventory} onAdd={async (item) => { const records = [{ collection: "inventory", record: item }]; if (Number(item.quantity) > 0) records.push({ collection: "inventoryMovements", record: { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: "in", quantity: Number(item.quantity), source: "manual", note: "رصيد افتتاحي" } }); if (!await upsertBatch(records)) { notify("تعذر حفظ مادة المخزون؛ حاول مجددًا."); return; } setShowAdd(false); }} /></Modal>}
     </div>
   );
 }
