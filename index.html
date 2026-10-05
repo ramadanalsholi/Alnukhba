@@ -55,7 +55,7 @@ const { useState, useEffect, useMemo, useRef } = React;
 // ضع قيم المشروع من Supabase هنا بعد إنشائه.
 const SUPABASE_URL = "";
 const SUPABASE_ANON_KEY = "";
-const hasSupabaseConfig = SUPABASE_URL.startsWith("https://") && !SUPABASE_ANON_KEY.startsWith("YOUR_");
+const hasSupabaseConfig = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 20 && !SUPABASE_ANON_KEY.startsWith("YOUR_");
 const supabaseClient = hasSupabaseConfig && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const COMPANY_LOGO_PATH = "photo_2026-10-04_22-29-34.jpg";
 
@@ -121,7 +121,34 @@ const getInvoicePaymentStatus = (invoice, invoices = []) => getInvoiceOutstandin
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
-const contactBalance = (c) => roundMoney((c.transactions || []).reduce((s, t) => s + (t.type === "debit" ? Number(t.amount) : t.type === "credit" ? -Number(t.amount) : 0), 0));
+const asciiDigits = (value) => String(value || "").replace(/[٠-٩۰-۹]/g, (digit) => String(digit.charCodeAt(0) - (digit.charCodeAt(0) >= 0x06f0 ? 0x06f0 : 0x0660)));
+// قبض من مورد يُعامل دائمًا كقيد مدين (يزيد المستحق علينا) حتى للسجلات القديمة المخزنة كدائن
+const effType = (t) => (t && t.supplierReceipt ? "debit" : t && t.type);
+const contactBalance = (c) => roundMoney((c.transactions || []).reduce((s, t) => s + (effType(t) === "debit" ? Number(t.amount) : effType(t) === "credit" ? -Number(t.amount) : 0), 0));
+const nextInvoiceNumber = (invoices = [], mode) => {
+  const nums = invoices.filter((i) => (i.direction || (i.type === "شراء" ? "purchase" : "sale")) === mode).map((i) => parseInt(asciiDigits(i.invoiceNumber).replace(/\D/g, ""), 10)).filter(Number.isFinite);
+  return String((nums.length ? Math.max(...nums) : 0) + 1);
+};
+const balanceText = (b, label) => {
+  const v = roundMoney(b);
+  if (v === 0) return "0.00";
+  const supplier = label === "موردون";
+  return (v > 0 ? (supplier ? "علينا" : "عليه") : (supplier ? "لنا" : "له")) + " " + fmt(Math.abs(v));
+};
+// كشف الحساب: يرتب الحركات (الفاتورة قبل الدفعة في اليوم نفسه) ويحسب الرصيد المرحّل قبل بداية الفترة
+const buildStatement = (transactions = [], start = "", end = "") => {
+  const signed = (t) => (effType(t) === "debit" ? Number(t.amount || 0) : effType(t) === "credit" ? -Number(t.amount || 0) : 0);
+  const rank = (t) => (t.invoiceDebt ? 0 : effType(t) === "debit" ? 1 : 2);
+  const all = transactions.map((t, i) => ({ t, i })).sort((a, b) => (a.t.date || "").localeCompare(b.t.date || "") || rank(a.t) - rank(b.t) || b.i - a.i).map((x) => x.t);
+  const before = start ? all.filter((t) => (t.date || "") < start) : [];
+  const rows = all.filter((t) => (!start || (t.date || "") >= start) && (!end || (t.date || "") <= end));
+  const opening = roundMoney(before.reduce((s, t) => s + signed(t), 0));
+  const totalDebit = roundMoney(rows.reduce((s, t) => s + (effType(t) === "debit" ? Number(t.amount || 0) : 0), 0));
+  const totalCredit = roundMoney(rows.reduce((s, t) => s + (effType(t) === "credit" ? Number(t.amount || 0) : 0), 0));
+  return { rows, opening, totalDebit, totalCredit, closing: roundMoney(opening + totalDebit - totalCredit) };
+};
+const statementKind = (row) => row.customerPayment ? "قبض" : row.supplierPayment ? "صرف" : row.customerRefund ? "صرف للعميل" : row.supplierReceipt ? "قبض من المورد" : row.invoiceDebt ? "فاتورة" : row.invoiceReturn ? "مرتجع" : row.manualEntry ? "قيد يدوي" : effType(row) === "debit" ? "مدين" : "دائن";
+const statementRef = (row, invoices = []) => { const inv = invoices.find((i) => i.id === row.invoiceId); return inv ? "#" + (inv.invoiceNumber || "") : "-"; };
 const getCustomerProjects = (customer, projects) => projects.filter((p) => p.customerId === customer.id || (!p.customerId && p.customerName === customer.name));
 const getCustomerOutstanding = (customer, projects, income) => {
   const ledger = contactBalance(customer);
@@ -133,8 +160,10 @@ const getCustomerOutstanding = (customer, projects, income) => {
 const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (ch) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#039;" }[ch]));
 function numberToArabicWords(value) {
   const num = Math.round(Number(value) || 0);
+  if (!Number.isFinite(num)) return "صفر";
   if (num === 0) return "صفر";
   if (num < 0) return "سالب " + numberToArabicWords(-num);
+  if (num > 999999999999) return String(num);
 
   const ones = ["", "واحد", "اثنان", "ثلاثة", "أربعة", "خمسة", "ستة", "سبعة", "ثمانية", "تسعة"];
   const teens = ["عشرة", "أحد عشر", "اثنا عشر", "ثلاثة عشر", "أربعة عشر", "خمسة عشر", "ستة عشر", "سبعة عشر", "ثمانية عشر", "تسعة عشر"];
@@ -249,16 +278,27 @@ const getRemainingInvoiceLines = (source, invoices = [], currentReturn = null) =
       : { ...line, costTotal: quantity * Number(line.costUnitPrice || 0) });
     return lines;
   }, new Map());
-  return [...grouped.values()].map((line) => {
-    const alreadyReturned = getInvoiceReturnedQuantity(source.id, line.inventoryId, invoices);
-    const currentQuantity = currentReturn?.isReturn && currentReturn.returnForInvoiceId === source.id
-      ? (currentReturn.items || []).filter((item) => item.inventoryId === line.inventoryId).reduce((sum, item) => sum + Number(item.quantity || 0), 0)
-      : 0;
+  const lines = [...grouped.values()];
+  if (!lines.length) return [];
+  const sourceAmount = roundMoney(Number(source.amount || 0));
+  const sourceSubtotal = Number(source.subtotal || 0);
+  const grossTotal = lines.reduce((sum, line) => sum + Number(line.total || 0), 0);
+  const netRatio = sourceSubtotal > 0 ? sourceAmount / sourceSubtotal : grossTotal > 0 ? sourceAmount / grossTotal : 1;
+  const existingReturns = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === source.id && invoice.id !== currentReturn?.id);
+  let allocatedNet = 0;
+  return lines.map((line, index) => {
+    const alreadyReturned = existingReturns.reduce((sum, invoice) => sum + (invoice.items || []).filter((item) => item.inventoryId === line.inventoryId).reduce((itemSum, item) => itemSum + Number(item.quantity || 0), 0), 0);
+    const alreadyReturnedAmount = roundMoney(existingReturns.reduce((sum, invoice) => sum + (invoice.items || []).filter((item) => item.inventoryId === line.inventoryId).reduce((itemSum, item) => itemSum + Number(item.total ?? Number(item.quantity || 0) * Number(item.unitPrice || 0)), 0), 0));
+    const lineNetAmount = index === lines.length - 1 ? roundMoney(sourceAmount - allocatedNet) : roundMoney(Number(line.total || 0) * netRatio);
+    allocatedNet = roundMoney(allocatedNet + lineNetAmount);
+    const returnable = Math.max(0, Number(line.quantity || 0) - alreadyReturned);
+    const returnableAmount = Math.max(0, roundMoney(lineNetAmount - alreadyReturnedAmount));
     return {
       ...line,
-      unitPrice: Number(line.quantity || 0) ? roundMoney(Number(line.total || 0) / Number(line.quantity)) : Number(line.unitPrice || 0),
+      unitPrice: returnable > 0 ? Number((returnableAmount / returnable).toFixed(6)) : Number(line.unitPrice || 0),
       costUnitPrice: Number(line.quantity || 0) ? roundMoney(Number(line.costTotal || 0) / Number(line.quantity)) : Number(line.costUnitPrice || 0),
-      returnable: Math.max(0, Number(line.quantity || 0) - alreadyReturned + currentQuantity),
+      returnable,
+      returnableAmount,
     };
   }).filter((line) => line.returnable > 0);
 };
@@ -267,47 +307,43 @@ const getSupplierStatement = (supplier, invoices = []) => {
   const transactions = supplier.transactions || [];
   const paidByInvoice = new Map();
   let allocatedPaymentTotal = 0;
-  let allocatedReceiptTotal = 0;
-  transactions.filter((transaction) => (transaction.supplierPayment || transaction.supplierReceipt) && Array.isArray(transaction.allocations)).forEach((transaction) => {
+  transactions.filter((transaction) => transaction.supplierPayment && Array.isArray(transaction.allocations)).forEach((transaction) => {
     transaction.allocations.forEach((allocation) => {
       const amount = Math.max(0, Number(allocation.amount || 0));
       if (!amount || !debtInvoices.some((invoice) => invoice.id === allocation.invoiceId)) return;
       paidByInvoice.set(allocation.invoiceId, (paidByInvoice.get(allocation.invoiceId) || 0) + amount);
-      if (transaction.supplierPayment) allocatedPaymentTotal += amount;
-      if (transaction.supplierReceipt) allocatedReceiptTotal += amount;
+      allocatedPaymentTotal += amount;
     });
   });
-  const rows = debtInvoices.map((invoice) => ({
-    invoice,
-    paid: Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0),
-    remaining: Math.max(0, Number(invoice.amount || 0) - Math.min(Number(invoice.amount || 0), paidByInvoice.get(invoice.id) || 0)),
-  }));
+  const rows = debtInvoices.map((invoice) => {
+    const netInvoiceAmount = roundMoney(Math.max(0, Number(invoice.amount || 0) - getInvoiceReturnedAmount(invoice.id, invoices)));
+    const allocated = paidByInvoice.get(invoice.id) || 0;
+    const paid = Math.min(netInvoiceAmount, allocated);
+    return { invoice, paid, remaining: roundMoney(Math.max(0, netInvoiceAmount - paid)), excessAllocated: roundMoney(Math.max(0, allocated - netInvoiceAmount)) };
+  });
   const supplierPaymentTotal = transactions
     .filter((transaction) => transaction.supplierPayment)
     .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
-  const supplierReceiptTotal = transactions
-    .filter((transaction) => transaction.supplierReceipt)
-    .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
   let unallocatedCredits = transactions
-    .filter((transaction) => transaction.type === "credit" && !transaction.supplierPayment && !transaction.supplierReceipt)
+    .filter((transaction) => effType(transaction) === "credit" && !transaction.supplierPayment && !transaction.invoiceReturn)
     .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0)
     + Math.max(0, supplierPaymentTotal - allocatedPaymentTotal)
-    + Math.max(0, supplierReceiptTotal - allocatedReceiptTotal);
+    + rows.reduce((sum, row) => sum + row.excessAllocated, 0);
   rows.forEach((row) => {
     const extra = Math.min(row.remaining, unallocatedCredits);
     row.paid += extra;
-    row.remaining -= extra;
+    row.remaining = roundMoney(row.remaining - extra);
     unallocatedCredits -= extra;
   });
   const invoiceDebt = rows.reduce((sum, row) => sum + Number(row.remaining || 0), 0);
   const invoicePaid = rows.reduce((sum, row) => sum + Number(row.paid || 0), 0);
   const invoiceDebtTransactionIds = new Set(debtInvoices.map((invoice) => invoice.debtTransactionId));
   const manualBalance = transactions
-    .filter((transaction) => !invoiceDebtTransactionIds.has(transaction.id) && !transaction.supplierPayment && transaction.type === "debit")
+    .filter((transaction) => !invoiceDebtTransactionIds.has(transaction.id) && !transaction.supplierPayment && effType(transaction) === "debit")
     .reduce((sum, transaction) => sum + Math.max(0, Number(transaction.amount || 0)), 0);
   const paymentExcess = unallocatedCredits;
   const net = invoiceDebt + manualBalance - paymentExcess;
-  return { rows, invoiceDebt, invoicePaid, manualBalance, paymentExcess, owed: Math.max(0, net), credit: Math.max(0, -net), totalInvoices: debtInvoices.reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0) };
+  return { rows, invoiceDebt, invoicePaid, manualBalance, paymentExcess, owed: Math.max(0, net), credit: Math.max(0, -net), totalInvoices: roundMoney(debtInvoices.reduce((sum, invoice) => sum + Math.max(0, Number(invoice.amount || 0) - getInvoiceReturnedAmount(invoice.id, invoices)), 0)) };
 };
 const allocateSupplierPayment = (supplier, invoices, amount) => {
   const statement = getSupplierStatement(supplier, invoices);
@@ -522,32 +558,46 @@ function useFactoryData(organizationId) {
       return true;
     }
   };
-  const upsertBatch = async (records) => {
-    if (!Array.isArray(records) || records.length === 0) return true;
+  const upsertBatch = async (records = [], deletes = []) => {
+    if (!Array.isArray(records) || !Array.isArray(deletes)
+      || records.some((item) => !item || typeof item.collection !== "string" || !item.record || typeof item.record.id !== "string")
+      || deletes.some((item) => !item || typeof item.collection !== "string" || typeof item.id !== "string" || !item.id.trim())) {
+      setError("بيانات الحفظ أو الحذف غير صالحة.");
+      return false;
+    }
+    if (records.length === 0 && deletes.length === 0) return true;
+    if ((!supabaseClient || !organizationId) && deletes.some(({ collection, id }) => !(data[collection] || []).some((item) => item.id === id))) {
+      setError("لم يُحذف السجل لأنه لم يعد موجودًا؛ لم تُعكس أي حركات مرتبطة.");
+      return false;
+    }
     if (supabaseClient && organizationId) {
-      const { error: batchError } = await supabaseClient.rpc("upsert_app_records_batch", {
-        p_organization_id: organizationId,
-        p_records: records.map(({ collection, record }) => ({ collection, id: record.id, payload: record })),
-      });
+      const payloadRecords = records.map(({ collection, record }) => ({ collection, id: record.id, payload: record }));
+      const { error: batchError } = deletes.length
+        ? await supabaseClient.rpc("apply_app_records_batch", { p_organization_id: organizationId, p_upserts: payloadRecords, p_deletes: deletes.map(({ collection, id }) => ({ collection, id })) })
+        : await supabaseClient.rpc("upsert_app_records_batch", { p_organization_id: organizationId, p_records: payloadRecords });
       if (batchError) { setError(batchError.message); return false; }
       remoteLoadVersion.current += 1;
     }
     setData((prev) => {
       const next = { ...prev };
+      const touched = new Set();
       records.forEach(({ collection, record }) => {
         const list = next[collection] || [];
         const index = list.findIndex((item) => item.id === record.id);
         next[collection] = index < 0 ? [record, ...list] : list.map((item) => item.id === record.id ? record : item);
+        touched.add(collection);
       });
-      if (!supabaseClient || !organizationId) records.forEach(({ collection }) => saveLocal(collection, next[collection] || []));
+      deletes.forEach(({ collection, id }) => { next[collection] = (next[collection] || []).filter((item) => item.id !== id); touched.add(collection); });
+      if (!supabaseClient || !organizationId) touched.forEach((collection) => saveLocal(collection, next[collection] || []));
       return next;
     });
     return true;
   };
   const remove = async (name, id) => {
     if (supabaseClient && organizationId) {
-      const { error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id);
+      const { data: deletedRows, error: deleteError } = await supabaseClient.from("app_records").delete().eq("organization_id", organizationId).eq("collection", name).eq("id", id).select("id");
       if (deleteError) { setError(deleteError.message); return false; }
+      if (!deletedRows || deletedRows.length === 0) { setError("لم يُحذف السجل: الحذف مسموح لمالك الشركة فقط، أو أن السجل محذوف مسبقًا."); return false; }
       setData((prev) => ({ ...prev, [name]: (prev[name] || []).filter((d) => d.id !== id) }));
       return true;
     } else {
@@ -820,16 +870,8 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
     const remaining = currentTreasury.transactions.filter((item) => item.id !== transaction.id);
     const balanceAfter = Number(currentTreasury.openingBalance || 0) + remaining.reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
     if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن رصيد الخزينة سيصبح سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); return false; }
-    const saved = await upsert("treasury", { ...currentTreasury, transactions: remaining }, { throwOnError: false });
-    if (!saved) { notify("تعذر حفظ حذف الحركة؛ حاول مجددًا."); return false; }
-    if (transaction.expenseId) {
-      const removed = await remove("expenses", transaction.expenseId);
-      if (!removed) {
-        const restored = await upsert("treasury", currentTreasury, { throwOnError: false });
-        notify(restored ? "تعذر حذف المصروف؛ أُعيدت حركة الخزينة كما كانت." : "تعذر حذف المصروف وعكس الخزينة. راجع سجل المصروفات والخزينة للتحقق من التطابق.");
-        return false;
-      }
-    }
+    const saved = await upsertBatch([{ collection: "treasury", record: { ...currentTreasury, transactions: remaining } }], transaction.expenseId ? [{ collection: "expenses", id: transaction.expenseId }] : []);
+    if (!saved) { notify("تعذر حفظ حذف الحركة؛ لم يتغير شيء. حاول مجددًا."); return false; }
     notify(transaction.expenseId ? "تم حذف المصروف وحركته من الخزينة." : "تم حذف حركة الخزينة.", "success");
     return true;
   };
@@ -927,7 +969,7 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
         {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteContactMovement={handleDeleteContactMovement} onDeleteCashMovement={handleDeleteCashMovement} />}
         {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} onDeleteCashMovement={handleDeleteCashMovement} />}
-        {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} remove={remove} />}
+        {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
             customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />
@@ -1179,51 +1221,167 @@ function printProjectInvoice(project, income = []) {
   window.setTimeout(triggerPrint, 700);
 }
 
+// ---------- printing ----------
+const PRINT_BASE_CSS = `@page{size:A4 portrait;margin:12mm}*{box-sizing:border-box;-webkit-print-color-adjust:exact;print-color-adjust:exact}body{font-family:Arial,Tahoma,sans-serif;color:#1f1b16;font-size:13px;margin:0;background:#fff}.top{display:flex;align-items:center;gap:12px;border-bottom:2px solid #7a4423;padding-bottom:10px;margin-bottom:12px}.top img{width:58px;height:58px;border-radius:14px;object-fit:cover}.co{font-size:24px;font-weight:800;color:#7a4423}.sub{font-size:12px;color:#6b645b}.grow{flex:1}h1{font-size:20px;color:#7a4423;margin:6px 0 12px;text-align:center}h2{font-size:15px;color:#7a4423;margin:16px 0 6px}table{width:100%;border-collapse:collapse}th,td{border:1px solid #e3dbd0;padding:7px 6px;text-align:center;font-size:12px}th{background:#7a4423;color:#fff}tbody tr:nth-child(even) td{background:#faf7f4}td.r{text-align:right}.meta{display:flex;justify-content:space-between;gap:10px;margin:8px 0;font-size:13px}.box{border:1px solid #e3dbd0;border-radius:8px;padding:8px 12px;margin-top:12px;background:#faf7f4;line-height:1.9}.totals{display:flex;gap:10px;margin-top:12px;font-weight:700}.totals div{flex:1;padding:8px 10px;border:1px solid #e3dbd0;border-radius:8px;background:#faf7f4}.tot{margin:14px 0 0 auto;width:300px}.tot div{display:flex;justify-content:space-between;padding:5px 0}.tot .grand{font-weight:800;border-top:2px solid #777;margin-top:6px}.sign{display:flex;justify-content:space-between;margin-top:46px}.sign div{width:30%;text-align:center;border-top:1px solid #777;padding-top:6px;font-size:12px}.big{font-size:22px;font-weight:800;color:#7a4423}`;
+const logoUrl = () => { try { return new URL(COMPANY_LOGO_PATH, window.location.href).href; } catch (e) { return COMPANY_LOGO_PATH; } };
+const printHeaderHtml = (extra = "") => `<div class="top"><img src="${escapeHtml(logoUrl())}" alt="" onerror="this.style.display='none'"/><div class="grow"><div class="co">شركة القصر</div><div class="sub">إدارة المحاسبة</div></div>${extra}</div>`;
+function openPrintWindow(title, bodyHtml, { landscape = false } = {}) {
+  const w = window.open("", "_blank", "width=1000,height=800");
+  if (!w) { notify("يرجى السماح بالنوافذ المنبثقة للطباعة."); return; }
+  const css = PRINT_BASE_CSS + (landscape ? "@page{size:A4 landscape;margin:10mm}" : "");
+  w.document.open();
+  w.document.write(`<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${escapeHtml(title)}</title><style>${css}</style></head><body>${bodyHtml}</body></html>`);
+  w.document.close();
+  let printed = false;
+  const go = () => { if (printed) return; printed = true; try { w.focus(); w.print(); } catch (error) { console.error("Print failed:", error); } };
+  const pending = Array.from(w.document.images).filter((img) => !img.complete);
+  if (!pending.length) { w.setTimeout(go, 300); return; }
+  let left = pending.length;
+  const done = () => { left -= 1; if (left <= 0) w.setTimeout(go, 100); };
+  pending.forEach((img) => { img.onload = done; img.onerror = done; });
+  w.setTimeout(go, 3000);
+}
+const amountInWords = (value) => {
+  const v = roundMoney(Math.abs(Number(value) || 0));
+  const whole = Math.floor(v);
+  const frac = Math.round((v - whole) * 100);
+  return numberToArabicWords(whole) + " دينار" + (frac ? " و" + String(frac).padStart(2, "0") + "/100" : "") + " فقط لا غير";
+};
+const cashSourceLabel = (tx) => tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source === "manual" ? "يدوي" : (tx.source || "حركة");
+
 function printInvoiceDocument(invoice, invoices = []) {
-  const printWindow = window.open("", "_blank", "width=900,height=700");
-  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة الفاتورة."); return; }
-  const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-  const logoMarkup = `<img src="${COMPANY_LOGO_PATH}" alt="شعار شركة القصر" style="width:52px;height:52px;border-radius:14px;object-fit:cover;display:block" />`;
-  const lines = (invoice.items || []).map((item) => `<tr><td>${escapeHtml(item.name)}</td><td>${escapeHtml(item.quantity)} ${escapeHtml(item.unit)}</td><td>${fmt(item.unitPrice)}</td><td>${fmt(item.total)}</td></tr>`).join("");
-  const title = invoice.isReturn ? "إشعار مرتجع" : invoice.direction === "purchase" ? "فاتورة مشتريات" : "فاتورة مبيعات";
+  const mode = invoice.direction || (invoice.type === "شراء" ? "purchase" : "sale");
+  const title = invoice.isReturn ? (mode === "purchase" ? "إشعار مرتجع مشتريات" : "إشعار مرتجع مبيعات") : mode === "purchase" ? "فاتورة مشتريات" : "فاتورة مبيعات";
+  const partyLabel = mode === "purchase" ? "المورد" : "العميل";
   const paid = getInvoicePaidAmount(invoice);
-  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>${title}</title><style>body{font-family:Arial,sans-serif;margin:32px;color:#292524}h1{font-size:24px;margin-bottom:6px}.brand{display:flex;align-items:center;gap:12px;margin-bottom:16px;padding-bottom:12px;border-bottom:2px solid #7a4423}.logo{width:52px;height:52px;border-radius:14px;overflow:hidden;display:flex;align-items:center;justify-content:center}.meta{display:flex;justify-content:space-between;margin:22px 0}table{width:100%;border-collapse:collapse}th,td{border:1px solid #ddd;padding:10px;text-align:right}th{background:#f5f1ea}.totals{margin:20px 0 0 auto;width:280px}.totals div{display:flex;justify-content:space-between;padding:5px 0}.grand{font-weight:bold;border-top:2px solid #777;margin-top:8px}@media print{button{display:none}}</style></head><body><div class="brand"><div class="logo">${logoMarkup}</div><div><div style="font-size:23px;font-weight:800;color:#7a4423">شركة القصر</div><div style="font-size:12px;color:#6b645b">إدارة المحاسبة</div></div></div><h1>${title}</h1><div>${escapeHtml(invoice.contactName || invoice.supplierName || invoice.customerName || "")}</div><div class="meta"><span>رقم الفاتورة: ${escapeHtml(invoice.invoiceNumber || invoice.id)}</span><span>التاريخ: ${escapeHtml(invoice.date)}</span></div><table><thead><tr><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${lines}</tbody></table><div class="totals"><div><span>المجموع</span><span>${fmt(invoice.subtotal ?? invoice.amount)}</span></div><div><span>الخصم</span><span>${fmt(invoice.discount || 0)}</span></div><div class="grand"><span>الصافي</span><span>${fmt(invoice.amount)}</span></div><div><span>${invoice.isReturn ? "المبلغ المسوى نقدًا" : "المسدد"}</span><span>${fmt(paid)}</span></div><div><span>المتبقي</span><span>${fmt(invoice.isReturn ? 0 : getInvoiceOutstanding(invoice, invoices))}</span></div></div>${invoice.description ? `<p>ملاحظات: ${escapeHtml(invoice.description)}</p>` : ""}</body></html>`;
-  printWindow.document.open();
-  printWindow.document.write(printHtml);
-  printWindow.document.close();
-  const triggerPrint = () => { try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Invoice print failed:", error); } };
-  printWindow.onload = triggerPrint;
-  window.setTimeout(triggerPrint, 700);
+  const outstanding = invoice.isReturn ? 0 : getInvoiceOutstanding(invoice, invoices);
+  const source = invoice.isReturn ? invoices.find((item) => item.id === invoice.returnForInvoiceId) : null;
+  const lines = (invoice.items || []).map((item, index) => `<tr><td>${index + 1}</td><td class="r">${escapeHtml(item.name)}</td><td>${escapeHtml(item.quantity)} ${escapeHtml(item.unit)}</td><td>${fmt(item.unitPrice)}</td><td>${fmt(item.total)}</td></tr>`).join("");
+  const body = `${printHeaderHtml(`<div style="text-align:left"><div class="big">${escapeHtml(title)}</div></div>`)}
+    <div class="meta"><span>رقم الفاتورة: <b>${escapeHtml(invoice.invoiceNumber || invoice.id)}</b></span><span>التاريخ: <b>${escapeHtml(invoice.date)}</b></span></div>
+    <div class="meta"><span>${partyLabel}: <b>${escapeHtml(invoice.contactName || invoice.supplierName || invoice.customerName || "")}</b></span>${source ? `<span>مرتجع للفاتورة: <b>#${escapeHtml(source.invoiceNumber || source.id)}</b></span>` : ""}</div>
+    <table><thead><tr><th>#</th><th>الصنف</th><th>الكمية</th><th>سعر الوحدة</th><th>الإجمالي</th></tr></thead><tbody>${lines || `<tr><td colspan="5">لا توجد بنود</td></tr>`}</tbody></table>
+    <div class="tot"><div><span>المجموع</span><span>${fmt(invoice.subtotal ?? invoice.amount)}</span></div><div><span>الخصم</span><span>${fmt(invoice.discount || 0)}</span></div><div class="grand"><span>الصافي</span><span>${fmt(invoice.amount)}</span></div><div><span>${invoice.isReturn ? "المبلغ المسوى نقدًا" : "المسدد"}</span><span>${fmt(paid)}</span></div><div><span>المتبقي</span><span>${fmt(outstanding)}</span></div></div>
+    <div class="box"><b>الصافي كتابةً:</b> ${escapeHtml(amountInWords(invoice.amount))}${invoice.description ? `<br><b>ملاحظات:</b> ${escapeHtml(invoice.description)}` : ""}</div>
+    <div class="sign"><div>إعداد</div><div>${partyLabel}</div><div>اعتماد</div></div>`;
+  openPrintWindow(title + " " + (invoice.invoiceNumber || ""), body);
 }
 
-function printAccountStatement(contact, transactions = [], label = "العميل", startDate = "", endDate = "") {
-  const printWindow = window.open("", "_blank", "width=1000,height=800");
-  if (!printWindow) { notify("يرجى السماح بالنوافذ المنبثقة لطباعة كشف الحساب."); return; }
-  const escapeHtml = (value) => String(value ?? "").replace(/[&<>\"']/g, (character) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[character]);
-  const rows = [...transactions].filter((row) => (!startDate || (row.date || "") >= startDate) && (!endDate || (row.date || "") <= endDate)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-  let runningDebit = 0;
-  let runningCredit = 0;
-  let runningBalance = 0;
-  const totalDebit = rows.reduce((sum, row) => sum + (row.type === "debit" ? Number(row.amount || 0) : 0), 0);
-  const totalCredit = rows.reduce((sum, row) => sum + (row.type === "credit" ? Number(row.amount || 0) : 0), 0);
-  const finalBalance = totalDebit - totalCredit;
-  const rowsHtml = rows.length ? rows.map((row, index) => {
-    const debit = row.type === "debit" ? Number(row.amount || 0) : 0;
-    const credit = row.type === "credit" ? Number(row.amount || 0) : 0;
-    runningDebit += debit;
-    runningCredit += credit;
-    runningBalance += debit - credit;
-    const kind = row.customerPayment ? "قبض" : row.supplierPayment ? "صرف" : row.invoiceDebt ? "فاتورة" : row.invoiceReturn ? "مرتجع" : row.type === "debit" ? "مدين" : "دائن";
-    return `<tr><td>${index + 1}</td><td>${escapeHtml(row.id || "-")}</td><td>${escapeHtml(kind)}</td><td>${fmt(debit)}</td><td>${fmt(credit)}</td><td>${escapeHtml(row.date || "-")}</td><td>${fmt(runningDebit)}</td><td>${fmt(runningCredit)}</td><td>${fmt(runningBalance)}</td><td>${escapeHtml(row.note || "-")}</td></tr>`;
-  }).join("") : `<tr><td colspan="10" style="text-align:center;padding:20px;color:#6b645b;">لا توجد حركات في هذه المدة</td></tr>`;
-  const logoMarkup = `<img src="${COMPANY_LOGO_PATH}" alt="شعار شركة القصر" style="width:58px;height:58px;border-radius:16px;object-fit:cover;display:block" />`;
-  const printHtml = `<!doctype html><html lang="ar" dir="rtl"><head><meta charset="utf-8"><title>كشف حساب ${escapeHtml(contact.name || label)}</title><style>body{font-family:Arial,sans-serif;margin:22px;color:#1f1b16;background:#fff}table{width:100%;border-collapse:collapse;border:1px solid #e3dbd0}th,td{border:1px solid #e3dbd0;padding:8px 6px;text-align:center;font-size:12px}th{background:#7a4423;color:#fff}tr:nth-child(even) td{background:#faf7f4}.top{display:flex;align-items:center;justify-content:space-between;gap:12px;border-bottom:2px solid #7a4423;padding-bottom:12px;margin-bottom:16px}.logo{width:58px;height:58px;border-radius:16px;overflow:hidden}.meta{margin:10px 0}.meta .row{display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px dashed #d8cfc5}.totals{margin-top:14px;display:flex;justify-content:space-between;gap:10px;font-weight:700}.totals div{padding:8px 10px;border:1px solid #e3dbd0;border-radius:8px;background:#faf7f4}</style></head><body><div class="top"><div class="logo">${logoMarkup}</div><div><div style="font-size:26px;font-weight:800;color:#7a4423">شركة القصر</div><div style="font-size:12px;color:#6b645b">إدارة المحاسبة</div></div><div style="text-align:left"><div>كشف حساب</div><div style="font-weight:700">${escapeHtml(label === "موردون" ? "المورد" : "العميل")}</div></div></div><div class="meta"><div class="row"><span>الاسم</span><b>${escapeHtml(contact.name || "-")}</b></div><div class="row"><span>المدة</span><b>${escapeHtml(startDate || "-")} إلى ${escapeHtml(endDate || "-")}</b></div></div><table><thead><tr><th>#</th><th>رقم السند</th><th>النوع</th><th>مدين</th><th>دائن</th><th>التاريخ</th><th>رصيد المدين</th><th>رصيد الدائن</th><th>الرصيد</th><th>ملاحظات</th></tr></thead><tbody>${rowsHtml}</tbody></table><div class="totals"><div>إجمالي المدين: ${fmt(totalDebit)}</div><div>إجمالي الدائن: ${fmt(totalCredit)}</div><div>الرصيد: ${fmt(finalBalance)}</div></div></body></html>`;
-  printWindow.document.open();
-  printWindow.document.write(printHtml);
-  printWindow.document.close();
-  const triggerPrint = () => { try { printWindow.focus(); printWindow.print(); } catch (error) { console.error("Statement print failed:", error); } };
-  printWindow.onload = triggerPrint;
-  window.setTimeout(triggerPrint, 700);
+function printAccountStatement(contact, transactions = [], label = "عملاء", startDate = "", endDate = "", invoices = []) {
+  const party = label === "موردون" ? "المورد" : label === "عمال" ? "العامل" : "العميل";
+  const debitHead = label === "موردون" ? "مستحق (علينا)" : label === "عمال" ? "عليه" : "مدين (عليه)";
+  const creditHead = label === "موردون" ? "مسدد / مخصوم" : label === "عمال" ? "له" : "دائن (له)";
+  const st = buildStatement(transactions, startDate, endDate);
+  let running = st.opening;
+  const openingRow = startDate ? `<tr><td></td><td>${escapeHtml(startDate)}</td><td>-</td><td>رصيد مرحّل</td><td></td><td></td><td>${escapeHtml(balanceText(st.opening, label))}</td><td class="r">الرصيد قبل بداية الفترة</td></tr>` : "";
+  const rowsHtml = st.rows.length ? st.rows.map((row, index) => {
+    const debit = effType(row) === "debit" ? Number(row.amount || 0) : 0;
+    const credit = effType(row) === "credit" ? Number(row.amount || 0) : 0;
+    running = roundMoney(running + debit - credit);
+    return `<tr><td>${index + 1}</td><td>${escapeHtml(row.date || "-")}</td><td>${escapeHtml(statementRef(row, invoices))}</td><td>${escapeHtml(statementKind(row))}</td><td>${debit ? fmt(debit) : ""}</td><td>${credit ? fmt(credit) : ""}</td><td>${escapeHtml(balanceText(running, label))}</td><td class="r">${escapeHtml(row.note || "-")}</td></tr>`;
+  }).join("") : `<tr><td colspan="8" style="padding:18px;color:#6b645b">لا توجد حركات في هذه المدة</td></tr>`;
+  const body = `${printHeaderHtml(`<div style="text-align:left"><div class="big">كشف حساب</div><div>${party}</div></div>`)}
+    <div class="meta"><span>الاسم: <b>${escapeHtml(contact.name || "-")}</b>${contact.phone ? ` · ${escapeHtml(contact.phone)}` : ""}</span><span>المدة: <b>${escapeHtml(startDate || "البداية")} إلى ${escapeHtml(endDate || "اليوم")}</b></span></div>
+    <table><thead><tr><th>#</th><th>التاريخ</th><th>المرجع</th><th>النوع</th><th>${debitHead}</th><th>${creditHead}</th><th>الرصيد</th><th>البيان</th></tr></thead><tbody>${openingRow}${rowsHtml}</tbody></table>
+    <div class="totals"><div>الرصيد المرحّل: ${escapeHtml(balanceText(st.opening, label))}</div><div>إجمالي ${debitHead}: ${fmt(st.totalDebit)}</div><div>إجمالي ${creditHead}: ${fmt(st.totalCredit)}</div><div>الرصيد الختامي: ${escapeHtml(balanceText(st.closing, label))}</div></div>
+    <div class="sign"><div>المحاسب</div><div>${party}</div><div>اعتماد</div></div>`;
+  openPrintWindow("كشف حساب " + (contact.name || ""), body);
+}
+
+function printVoucher(tx) {
+  const isIn = tx.direction === "in";
+  const title = isIn ? "سند قبض" : "سند صرف";
+  const number = String(tx.paymentId || tx.id || "").slice(-6).toUpperCase();
+  const party = tx.partyName || (tx.expenseId ? "مصروف" : "-");
+  const body = `${printHeaderHtml(`<div style="text-align:left"><div class="big">${title}</div></div>`)}
+    <div class="meta"><span>رقم السند: <b>${escapeHtml(number)}</b></span><span>التاريخ: <b>${escapeHtml(tx.date || "")}</b></span></div>
+    <div class="box"><div>${isIn ? "استلمنا من السيد/ة" : "صرفنا إلى السيد/ة"}: <b>${escapeHtml(party)}</b></div><div>مبلغًا وقدره: <span class="big">${fmt(tx.amount)}</span> دينار</div><div>كتابةً: ${escapeHtml(amountInWords(tx.amount))}</div><div>وذلك عن: ${escapeHtml(tx.note || "-")}</div><div>المصدر: ${escapeHtml(cashSourceLabel(tx))}</div></div>
+    <div class="sign"><div>${isIn ? "المستلم (المحاسب)" : "المستلم"}</div><div>${isIn ? "المسلّم" : "المحاسب"}</div><div>اعتماد</div></div>`;
+  openPrintWindow(title + " " + number, body);
+}
+
+function printTreasuryStatement(record, startDate = "", endDate = "") {
+  const signed = (tx) => (tx.direction === "in" ? 1 : -1) * Number(tx.amount || 0);
+  const all = (record.transactions || []).map((t, i) => ({ t, i })).sort((a, b) => (a.t.date || "").localeCompare(b.t.date || "") || b.i - a.i).map((x) => x.t);
+  const before = startDate ? all.filter((t) => (t.date || "") < startDate) : [];
+  const rows = all.filter((t) => (!startDate || (t.date || "") >= startDate) && (!endDate || (t.date || "") <= endDate));
+  const opening = roundMoney(Number(record.openingBalance || 0) + before.reduce((s, t) => s + signed(t), 0));
+  let running = opening;
+  const totalIn = roundMoney(rows.filter((t) => t.direction === "in").reduce((s, t) => s + Number(t.amount || 0), 0));
+  const totalOut = roundMoney(rows.filter((t) => t.direction === "out").reduce((s, t) => s + Number(t.amount || 0), 0));
+  const rowsHtml = rows.length ? rows.map((tx, index) => { running = roundMoney(running + signed(tx)); return `<tr><td>${index + 1}</td><td>${escapeHtml(tx.date || "-")}</td><td class="r">${escapeHtml(tx.note || "-")}</td><td>${escapeHtml(cashSourceLabel(tx))}</td><td>${tx.direction === "in" ? fmt(tx.amount) : ""}</td><td>${tx.direction === "out" ? fmt(tx.amount) : ""}</td><td>${fmt(running)}</td></tr>`; }).join("") : `<tr><td colspan="7" style="padding:18px;color:#6b645b">لا توجد حركات في هذه المدة</td></tr>`;
+  const body = `${printHeaderHtml(`<div style="text-align:left"><div class="big">كشف حساب الخزينة</div></div>`)}
+    <div class="meta"><span>المدة: <b>${escapeHtml(startDate || "البداية")} إلى ${escapeHtml(endDate || "اليوم")}</b></span><span>الرصيد في أول المدة: <b>${fmt(opening)}</b></span></div>
+    <table><thead><tr><th>#</th><th>التاريخ</th><th>البيان</th><th>المصدر</th><th>قبض</th><th>صرف</th><th>الرصيد</th></tr></thead><tbody>${rowsHtml}</tbody></table>
+    <div class="totals"><div>إجمالي القبض: ${fmt(totalIn)}</div><div>إجمالي الصرف: ${fmt(totalOut)}</div><div>الرصيد الختامي: ${fmt(roundMoney(opening + totalIn - totalOut))}</div></div>
+    <div class="sign"><div>أمين الصندوق</div><div>المحاسب</div><div>اعتماد</div></div>`;
+  openPrintWindow("كشف الخزينة", body);
+}
+
+function printReportDocument(title, sections = []) {
+  const body = `${printHeaderHtml(`<div style="text-align:left"><div class="big">${escapeHtml(title)}</div></div>`)}` + sections.map((section) => `<h2>${escapeHtml(section.title)}</h2><table><tbody>${section.rows.length ? section.rows.map(([k, v]) => `<tr><td class="r">${escapeHtml(k)}</td><td><b>${escapeHtml(v)}</b></td></tr>`).join("") : `<tr><td colspan="2" style="color:#6b645b">لا توجد بيانات</td></tr>`}</tbody></table>`).join("") + `<div class="sign"><div>المحاسب</div><div></div><div>اعتماد</div></div>`;
+  openPrintWindow(title, body);
+}
+
+function StatementBody({ transactions, start, end, invoices, label }) {
+  const st = buildStatement(transactions, start, end);
+  let running = st.opening;
+  const cell = "px-2 py-1.5 text-xs text-center";
+  const color = { color: "var(--text-body)" };
+  return <>
+    {start && <tr style={{ borderTop: "1px solid var(--divider)", background: "var(--divider)" }}><td className={cell} style={color}></td><td className={cell} style={color}>{start}</td><td className={cell} style={color}>-</td><td className={cell} style={color}>رصيد مرحّل</td><td className={cell} style={color}></td><td className={cell} style={color}></td><td className={cell} style={color}>{balanceText(st.opening, label)}</td><td className={cell} style={color}>الرصيد قبل بداية الفترة</td></tr>}
+    {st.rows.length === 0 ? <tr><td colSpan="8" className="px-2 py-3 text-xs text-center" style={{ color: "var(--text-muted)" }}>لا توجد حركات في هذه المدة</td></tr> : st.rows.map((row, index) => {
+      const debit = effType(row) === "debit" ? Number(row.amount || 0) : 0;
+      const credit = effType(row) === "credit" ? Number(row.amount || 0) : 0;
+      running = roundMoney(running + debit - credit);
+      return <tr key={row.id || index} style={{ borderTop: "1px solid var(--divider)" }}>
+        <td className={cell} style={color}>{index + 1}</td><td className={cell} style={color}>{row.date || "-"}</td><td className={cell} style={color}>{statementRef(row, invoices)}</td><td className={cell} style={color}>{statementKind(row)}</td>
+        <td className={cell} style={color}>{debit ? fmt(debit) : ""}</td><td className={cell} style={color}>{credit ? fmt(credit) : ""}</td><td className={cell} style={color}>{balanceText(running, label)}</td><td className={cell} style={color}>{row.note || "-"}</td>
+      </tr>;
+    })}
+    <tr style={{ borderTop: "2px solid var(--card-border)", fontWeight: 700 }}><td className={cell} style={color} colSpan="4">الإجمالي · الرصيد الختامي: {balanceText(st.closing, label)}</td><td className={cell} style={color}>{fmt(st.totalDebit)}</td><td className={cell} style={color}>{fmt(st.totalCredit)}</td><td className={cell} style={color} colSpan="2"></td></tr>
+  </>;
+}
+
+function ManualEntryForm({ label, onAdd }) {
+  const supplier = label === "موردون";
+  const worker = label === "عمال";
+  const [open, setOpen] = useState(false);
+  const [type, setType] = useState("debit");
+  const [amount, setAmount] = useState("");
+  const [date, setDate] = useState(todayISO());
+  const [note, setNote] = useState("");
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const debitLabel = supplier ? "مستحق للمورد علينا (رصيد افتتاحي / مشتريات سابقة)" : worker ? "عليه (سلفة)" : "عليه (رصيد افتتاحي / دين سابق)";
+  const creditLabel = supplier ? "لنا عند المورد (دفعة مقدمة)" : worker ? "له (مستحقات)" : "له (رصيد دائن)";
+  const submit = async () => {
+    if (savingRef.current) return;
+    if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
+    if (!date) { notify("أدخل التاريخ."); return; }
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const ok = await onAdd({ type, amount: roundMoney(Number(amount)), date, note: note.trim() || (type === "debit" ? "رصيد افتتاحي / قيد يدوي مدين" : "قيد يدوي دائن"), manualEntry: true });
+      if (ok) { setAmount(""); setNote(""); setOpen(false); }
+    } catch (error) {
+      console.error("Manual ledger entry failed:", error);
+      notify("تعذر حفظ القيد اليدوي.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+  return <div className="rounded-xl border p-3 flex flex-col gap-2" style={{ borderColor: "var(--card-border)" }}>
+    <div className="flex items-center justify-between"><FieldLabel>قيد يدوي / رصيد افتتاحي</FieldLabel><button className="text-xs" style={{ color: "var(--accent)" }} onClick={() => setOpen(!open)}>{open ? "إخفاء" : "إضافة قيد"}</button></div>
+    {open && <div className="flex flex-col gap-2">
+      <Select value={type} onChange={(e) => setType(e.target.value)}><option value="debit">{debitLabel}</option><option value="credit">{creditLabel}</option></Select>
+      <div className="grid grid-cols-2 gap-2"><TextInput type="number" min="0.01" step="0.01" placeholder="المبلغ" value={amount} onChange={(e) => setAmount(e.target.value)} /><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div>
+      <TextInput placeholder="البيان (اختياري)" value={note} onChange={(e) => setNote(e.target.value)} />
+      <div className="text-[11px]" style={{ color: "var(--text-muted)" }}>هذا القيد يؤثر على حساب الجهة فقط ولا يحرّك الخزينة. استخدم سندات القبض والصرف لأي حركة نقدية.</div>
+      <div><PrimaryButton onClick={submit} disabled={saving || !amount}>{saving ? "جارٍ الحفظ..." : "حفظ القيد"}</PrimaryButton></div>
+    </div>}
+  </div>;
 }
 
 function WaiveInline({ remaining, waived, onApply, onReset }) {
@@ -1486,14 +1644,8 @@ async function deleteInvoiceAndReverse(invoice, { mode, invoices, inventory, sup
   if (supplier) records.push({ collection: "suppliers", record: { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) } });
   const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
   if (customer) records.push({ collection: "customers", record: { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) } });
-  const deleted = await remove("invoices", invoice.id);
-  if (!deleted) { notify("تعذر حذف الفاتورة؛ لم يتم عكس المخزون أو القيود."); return false; }
-  const saved = await upsertBatch(records);
-  if (!saved) {
-    const restored = await upsert("invoices", invoice, { throwOnError: false });
-    notify(restored ? "تعذر حفظ عكس الفاتورة؛ أُعيدت الفاتورة إلى السجل دون تغيير القيود." : "فشل حذف الفاتورة وعكس القيود. تحقق يدويًا من الفاتورة والمخزون والخزينة.");
-    return false;
-  }
+  const saved = await upsertBatch(records, [{ collection: "invoices", id: invoice.id }]);
+  if (!saved) { notify("تعذر حذف الفاتورة؛ لم يتغير شيء (لا الفاتورة ولا المخزون ولا الحسابات ولا الخزينة)."); return false; }
   notify("تم حذف الفاتورة وعكس المخزون والحساب والخزينة.", "success");
   return true;
 }
@@ -1522,8 +1674,10 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
     const supplier = suppliers.find((s) => s.id === supplierId);
     if (supplier) upsert("suppliers", upsertSupplierDebt(supplier, transaction));
   };
-  const saveInvoice = (invoice) => {
+  const saveInvoice = async (invoice) => {
     const previous = editingInvoice;
+    const records = [];
+    const queue = (collection, record) => records.push({ collection, record });
     const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
     const paidAmount = Math.min(Number(invoice.amount || 0), Math.max(0, Number(invoice.paidAmount || 0)));
     const laterPaidAmount = getInvoiceLaterPaymentsAmount(invoice, customers, suppliers);
@@ -1548,7 +1702,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
       const item = inventory.find((entry) => entry.id === itemId);
       if (Number(item.quantity || 0) + delta < 0) {
         notify(`لا يمكن حفظ الفاتورة: مخزون «${item.name}» سيصبح سالبًا.`);
-        return;
+        return false;
       }
     }
     for (const [itemId, delta] of stockChanges) {
@@ -1557,14 +1711,14 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
       if (!delta && !valueChange) continue;
       const quantity = roundMoney(Number(item.quantity || 0) + delta);
       const inventoryValue = Number(item.quantity || 0) * Number(item.averageCost || 0) + valueChange;
-      upsert("inventory", { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 });
-      if (delta) upsert("inventoryMovements", { id: uid(), date: invoice.date, itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: invoice.isReturn ? "invoice-return" : "invoice", invoiceId: invoice.id, note: invoice.isReturn ? "مرتجع فاتورة" : mode === "purchase" ? "فاتورة شراء" : "فاتورة بيع" });
+      queue("inventory", { ...item, quantity, averageCost: quantity > 0 ? roundMoney(Math.max(0, inventoryValue) / quantity) : 0 });
+      if (delta) queue("inventoryMovements", { id: uid(), date: invoice.date, itemId: item.id, itemName: item.name, direction: delta > 0 ? "in" : "out", quantity: Math.abs(delta), source: invoice.isReturn ? "invoice-return" : "invoice", invoiceId: invoice.id, note: invoice.isReturn ? "مرتجع فاتورة" : mode === "purchase" ? "فاتورة شراء" : "فاتورة بيع" });
     }
     const previousCash = (currentTreasury.transactions || []).filter((tx) => !(tx.invoiceId === invoice.id && (tx.source === "invoice" || tx.source === "invoice-return")));
     const cashDirection = mode === "purchase" ? "out" : "in";
     const effectiveCashDirection = invoice.isReturn ? (cashDirection === "in" ? "out" : "in") : cashDirection;
     const treasuryTransactions = initialPaidAmount > 0 ? [{ id: "invoice-payment-" + invoice.id, date: invoice.date, direction: effectiveCashDirection, amount: initialPaidAmount, source: invoice.isReturn ? "invoice-return" : "invoice", invoiceId: invoice.id, note: invoice.isReturn ? "تسوية نقدية لمرتجع" : mode === "purchase" ? "دفعة فاتورة شراء" : "دفعة فاتورة بيع" }, ...previousCash] : previousCash;
-    upsert("treasury", { ...currentTreasury, transactions: treasuryTransactions });
+    queue("treasury", { ...currentTreasury, transactions: treasuryTransactions });
     if (mode === "sale" && invoice.contactId) {
       const customerIds = [...new Set([previous?.contactId, invoice.contactId].filter(Boolean))];
       customerIds.forEach((customerId) => {
@@ -1586,10 +1740,10 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
               ]
           : [];
         const nextTransactions = [...invoiceTransactions, ...remaining];
-        upsert("customers", { ...customer, transactions: nextTransactions });
+        queue("customers", { ...customer, transactions: nextTransactions });
       });
     }
-    upsert("invoices", invoice);
+    queue("invoices", invoice);
     if (mode === "purchase") {
       const supplierIds = [...new Set([previous?.contactId || previous?.supplierId, invoice.contactId].filter(Boolean))];
       supplierIds.forEach((supplierId) => {
@@ -1605,9 +1759,11 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
           if (unrecordedPayment > 0) remaining.unshift({ id: "invoice-payment-" + invoice.id, invoiceId: invoice.id, supplierPayment: true, date: invoice.date, type: "credit", amount: unrecordedPayment, note: "دفعة عند إصدار الفاتورة", allocations: [{ invoiceId: invoice.id, amount: unrecordedPayment }] });
           remaining.unshift({ id: invoice.debtTransactionId || invoice.contactTransactionId, invoiceId: invoice.id, invoiceDebt: true, date: invoice.date, type: "debit", amount: invoice.amount, note: "فاتورة شراء" });
         }
-        upsert("suppliers", { ...supplier, transactions: remaining });
+        queue("suppliers", { ...supplier, transactions: remaining });
       });
     }
+    const saved = await upsertBatch(records);
+    if (!saved) { notify("تعذر حفظ الفاتورة كاملة؛ لم يُحفظ أي من قيودها. تحقق من الاتصال وحاول مجددًا."); return false; }
     setEditingInvoice(null);
     return true;
   };
@@ -1659,7 +1815,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                       </div>
                     )}
                     <div className="flex justify-end">
-                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={async () => { if (await deleteInvoice(inv)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{mode === "sale" && <button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={async () => { if (await deleteInvoice(inv)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{<button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
                     </div>
                   </div>
                 )}
@@ -1668,7 +1824,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
           </div>
         </div>
       )}
-      {showAdd && <Modal title={creatingReturn ? `مرتجع ${mode === "purchase" ? "شراء" : "بيع"}` : `فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} customers={customers} suppliers={suppliers} upsert={upsert} startAsReturn={creatingReturn} onAdd={(inv) => { if (saveInvoice(inv)) setShowAdd(false); }} /></Modal>}
+      {showAdd && <Modal title={creatingReturn ? `مرتجع ${mode === "purchase" ? "شراء" : "بيع"}` : `فاتورة ${mode === "purchase" ? "شراء" : "بيع"}`} onClose={() => setShowAdd(false)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} customers={customers} suppliers={suppliers} upsert={upsert} startAsReturn={creatingReturn} onAdd={async (inv) => { const saved = await saveInvoice(inv); if (saved) setShowAdd(false); return saved; }} /></Modal>}
       {editingInvoice && <Modal title={editingInvoice.isReturn ? "تعديل المرتجع" : "تعديل الفاتورة"} onClose={() => setEditingInvoice(null)} wide><AddInvoiceForm mode={mode} inventory={inventory} invoices={invoices} contacts={mode === "purchase" ? suppliers : customers} customers={customers} suppliers={suppliers} upsert={upsert} initialInvoice={editingInvoice} onAdd={saveInvoice} /></Modal>}
     </div>
   );
@@ -1695,7 +1851,7 @@ function InvoiceContactPicker({ mode, contacts, contactId, contactName, onSelect
 }
 
 function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, customers = [], suppliers = [], upsert, initialInvoice = null, startAsReturn = false }) {
-  const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice?.invoiceNumber || "");
+  const [invoiceNumber, setInvoiceNumber] = useState(initialInvoice ? (initialInvoice.invoiceNumber || "") : nextInvoiceNumber(invoices, mode));
   const [contactId, setContactId] = useState(initialInvoice?.contactId || initialInvoice?.supplierId || "");
   const [contactName, setContactName] = useState(initialInvoice?.contactName || initialInvoice?.supplierName || initialInvoice?.customerName || "");
   const [amount, setAmount] = useState(initialInvoice?.amount ? String(initialInvoice.amount) : "");
@@ -1706,9 +1862,29 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
   const [paidAmount, setPaidAmount] = useState(String(initialInvoice ? getInvoiceInitialPaidAmount(initialInvoice, customers, suppliers) : 0));
   const [isReturn, setIsReturn] = useState(Boolean(initialInvoice?.isReturn || startAsReturn));
   const [returnForInvoiceId, setReturnForInvoiceId] = useState(initialInvoice?.returnForInvoiceId || "");
-  const [items, setItems] = useState(initialInvoice?.items?.length ? initialInvoice.items : [{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
+  const initialReturnLines = initialInvoice?.isReturn
+    ? getRemainingInvoiceLines(invoices.find((invoice) => invoice.id === initialInvoice.returnForInvoiceId), invoices, initialInvoice)
+    : [];
+  const [items, setItems] = useState(initialInvoice?.items?.length
+    ? initialInvoice.items.map((item) => {
+        const returnLine = initialReturnLines.find((line) => line.inventoryId === item.inventoryId);
+        return { ...item, returnable: returnLine?.returnable, returnableAmount: returnLine?.returnableAmount };
+      })
+    : [{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
 
-  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => { if (i !== idx) return it; const next = { ...it, ...patch }; if (next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) next.total = String(roundMoney(Number(next.quantity) * Number(next.unitPrice))); return next; }));
+  const setItem = (idx, patch) => setItems((prev) => prev.map((it, i) => {
+    if (i !== idx) return it;
+    const next = { ...it, ...patch };
+    const quantityOrPriceChanged = Object.prototype.hasOwnProperty.call(patch, "quantity") || Object.prototype.hasOwnProperty.call(patch, "unitPrice");
+    if (quantityOrPriceChanged && next.quantity && next.unitPrice && nonNegativeNumber(next.quantity) && nonNegativeNumber(next.unitPrice)) {
+      const quantity = Number(next.quantity);
+      const completesReturnLine = isReturn && Number.isFinite(Number(next.returnable)) && Number.isFinite(Number(next.returnableAmount)) && quantity >= Number(next.returnable) - 0.0000001;
+      next.total = String(roundMoney(completesReturnLine ? next.returnableAmount : quantity * Number(next.unitPrice)));
+    }
+    return next;
+  }));
   const addRow = () => setItems((prev) => [...prev, { inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]);
   const removeRow = (idx) => setItems((prev) => prev.filter((_, i) => i !== idx));
   const itemsTotal = roundMoney(items.reduce((s, it) => s + Number(it.total || 0), 0));
@@ -1725,12 +1901,15 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
     if (!initialInvoice && paymentStatus === "paid") setPaidAmount(String(effectiveAmount));
   }, [effectiveAmount, paymentStatus, initialInvoice]);
 
-  const submit = () => {
+  const submit = async () => {
+    if (savingRef.current) return;
     if (!positiveNumber(effectiveAmount) || Number(effectiveAmount) < 0) { notify("مبلغ الفاتورة يجب أن يكون موجبًا."); return; }
     if (!nonNegativeNumber(discount) || Number(discount) > subtotal) { notify("الخصم يجب أن يكون غير سالب ولا يتجاوز إجمالي الفاتورة."); return; }
     if (!nonNegativeNumber(paidAmount) || Number(paidAmount) > effectiveAmount) { notify("المبلغ المدفوع يجب أن يكون بين صفر وإجمالي الفاتورة."); return; }
     if (initialInvoice && getInvoicePaidAmount(initialInvoice) + getInvoiceReturnedAmount(initialInvoice.id, invoices) > effectiveAmount) { notify("لا يمكن تخفيض قيمة الفاتورة إلى أقل من المسدد والمرتجعات المسجلة."); return; }
     if (!contactId) { notify(`اختر ${mode === "purchase" ? "المورد" : "العميل"} أولًا.`); return; }
+    if (!invoiceNumber.trim()) { notify("أدخل رقم الفاتورة."); return; }
+    if (invoices.some((i) => i.id !== initialInvoice?.id && (i.direction || (i.type === "شراء" ? "purchase" : "sale")) === mode && normalizeName(i.invoiceNumber) === normalizeName(invoiceNumber) && (mode === "sale" || (i.contactId || i.supplierId) === contactId))) { notify("رقم الفاتورة مستخدم مسبقًا، اختر رقمًا آخر."); return; }
     if (isReturn && !returnSource) { notify("اختر الفاتورة الأصلية للمرتجع."); return; }
     const purchaseCostFactor = mode === "purchase" && !isReturn && subtotal > 0 ? effectiveAmount / subtotal : 1;
     const cleanItems = items.filter((it) => it.inventoryId && positiveNumber(it.quantity) && positiveNumber(it.total)).map((it) => {
@@ -1750,7 +1929,8 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
         if (quantity > sourceQuantity - alreadyReturned) { notify(`كمية المرتجع تتجاوز المتبقي من «${inventory.find((item) => item.id === itemId)?.name || "الصنف"}».`); return; }
       }
       const alreadyReturnedValue = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === returnSource.id && invoice.id !== initialInvoice?.id).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
-      if (effectiveAmount > Number(returnSource.amount || 0) - alreadyReturnedValue) { notify("قيمة المرتجع تتجاوز المتبقي من قيمة الفاتورة الأصلية."); return; }
+      const remainingReturnValue = roundMoney(Number(returnSource.amount || 0) - alreadyReturnedValue);
+      if (roundMoney(effectiveAmount) > remainingReturnValue) { notify("قيمة المرتجع تتجاوز المتبقي من قيمة الفاتورة الأصلية."); return; }
       const sourcePaid = getInvoicePaidAmount(returnSource);
       const alreadyRefunded = invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === returnSource.id && invoice.id !== initialInvoice?.id).reduce((sum, invoice) => sum + Number(invoice.paidAmount || 0), 0);
       if (Number(paidAmount) > sourcePaid - alreadyRefunded) { notify("المبلغ النقدي المعاد يتجاوز ما دُفع على الفاتورة الأصلية."); return; }
@@ -1781,13 +1961,23 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
       supplierId: mode === "purchase" ? (contactId || null) : null, supplierName: mode === "purchase" ? contactName.trim() : "", customerId: mode === "sale" ? (contactId || null) : null, customerName: mode === "sale" ? contactName.trim() : "",
       amount: effectiveAmount, subtotal: roundMoney(subtotal), discount: roundMoney(Number(discount)), paidAmount: actualPaidAmount, initialPaidAmount, date, description: description.trim(), items: cleanItems, paymentStatus: actualPaymentStatus, debtTransactionId, contactTransactionId: initialInvoice?.contactTransactionId || "invoice-contact-" + invoiceId, isReturn, returnForInvoiceId: isReturn ? returnForInvoiceId : null,
     };
-    onAdd(inv);
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onAdd(inv);
+    } catch (error) {
+      console.error("Invoice save failed:", error);
+      notify("تعذر حفظ الفاتورة؛ لم تكتمل العملية.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
   };
 
   return (
     <div className="flex flex-col gap-3">
       <div>
-        <FieldLabel>رقم الفاتورة (اختياري)</FieldLabel><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
+        <FieldLabel>رقم الفاتورة</FieldLabel><TextInput value={invoiceNumber} onChange={(e) => setInvoiceNumber(e.target.value)} />
       </div>
       {!initialInvoice && <label className="flex items-center gap-2 text-sm" style={{ color: "var(--text-body)" }}><input type="checkbox" checked={isReturn} onChange={(e) => { setIsReturn(e.target.checked); setReturnForInvoiceId(""); setItems([{ inventoryId: "", name: "", quantity: "", unit: "كيس", unitPrice: "", total: "" }]); setPaidAmount(e.target.checked ? "0" : String(effectiveAmount)); setPaymentStatus(e.target.checked ? "unpaid" : "paid"); }} /> إشعار مرتجع مرتبط بفاتورة أصلية</label>}
       {isReturn && <div><FieldLabel>الفاتورة الأصلية</FieldLabel><Select value={returnForInvoiceId} disabled={Boolean(initialInvoice)} onChange={(e) => {
@@ -1799,7 +1989,7 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
         setContactId(sourceContactId || "");
         setContactName(source.contactName || source.supplierName || source.customerName || "");
         const lines = getRemainingInvoiceLines(source, invoices);
-        setItems(lines.map((line) => ({ inventoryId: line.inventoryId, name: line.name, quantity: "", unit: line.unit, unitPrice: String(line.unitPrice || 0), total: "", costUnitPrice: Number(line.costUnitPrice || 0) })));
+        setItems(lines.map((line) => ({ inventoryId: line.inventoryId, name: line.name, quantity: "", unit: line.unit, unitPrice: String(line.unitPrice || 0), total: "", costUnitPrice: Number(line.costUnitPrice || 0), returnable: line.returnable, returnableAmount: line.returnableAmount })));
         setDiscount("0"); setPaidAmount("0"); setPaymentStatus("unpaid");
       }}><option value="">اختر الفاتورة الأصلية</option>{invoices.filter((invoice) => !invoice.isReturn && (invoice.direction || (invoice.type === "شراء" ? "purchase" : "sale")) === mode).map((invoice) => <option key={invoice.id} value={invoice.id}>#{invoice.invoiceNumber || invoice.id} · {invoice.date} · {fmt(invoice.amount)}</option>)}</Select></div>}
       <div><FieldLabel>{mode === "purchase" ? "المورد" : "العميل"}</FieldLabel>{isReturn || initialInvoice ? <TextInput value={contactName} disabled /> : <InvoiceContactPicker mode={mode} contacts={contacts} contactId={contactId} contactName={contactName} onSelect={(id) => { const contact = contacts.find((item) => item.id === id); setContactId(id || ""); setContactName(contact?.name || ""); }} onCreate={(contact) => { upsert(mode === "purchase" ? "suppliers" : "customers", contact); setContactId(contact.id); setContactName(contact.name); }} />}</div>
@@ -1814,7 +2004,7 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
           <FieldLabel>بنود الفاتورة من المخزن</FieldLabel>
         {items.map((it, idx) => (
           <div key={idx} className="grid grid-cols-2 sm:grid-cols-12 gap-1.5 items-center">
-            <div className="col-span-2 sm:col-span-3 min-w-0"><Select value={it.inventoryId} onChange={(e) => { const item = inventory.find((entry) => entry.id === e.target.value); const returnLine = returnLines.find((line) => line.inventoryId === e.target.value); setItem(idx, { inventoryId: e.target.value, name: item?.name || returnLine?.name || "", unit: returnLine?.unit || item?.unit || "كيس", unitPrice: isReturn ? String(returnLine?.unitPrice || 0) : it.unitPrice, costUnitPrice: Number(returnLine?.costUnitPrice ?? item?.averageCost ?? 0) }); }}><option value="">اختر من المخزن</option>{(isReturn ? returnLines : inventory).map((item) => <option key={item.inventoryId || item.id} value={item.inventoryId || item.id}>{item.name} ({isReturn ? `متاح ${fmt(item.returnable)} ${item.unit}` : `${fmt(item.quantity)} ${item.unit}`})</option>)}</Select></div>
+            <div className="col-span-2 sm:col-span-3 min-w-0"><Select value={it.inventoryId} onChange={(e) => { const item = inventory.find((entry) => entry.id === e.target.value); const returnLine = returnLines.find((line) => line.inventoryId === e.target.value); setItem(idx, { inventoryId: e.target.value, name: item?.name || returnLine?.name || "", unit: returnLine?.unit || item?.unit || "كيس", unitPrice: isReturn ? String(returnLine?.unitPrice || 0) : it.unitPrice, costUnitPrice: Number(returnLine?.costUnitPrice ?? item?.averageCost ?? 0), returnable: returnLine?.returnable, returnableAmount: returnLine?.returnableAmount }); }}><option value="">اختر من المخزن</option>{(isReturn ? returnLines : inventory).map((item) => <option key={item.inventoryId || item.id} value={item.inventoryId || item.id}>{item.name} ({isReturn ? `متاح ${fmt(item.returnable)} ${item.unit}` : `${fmt(item.quantity)} ${item.unit}`})</option>)}</Select></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="كمية" value={it.quantity} onChange={(e) => setItem(idx, { quantity: e.target.value })} /></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput placeholder="وحدة" value={it.unit} onChange={(e) => setItem(idx, { unit: e.target.value })} /></div>
             <div className="col-span-1 sm:col-span-2 min-w-0"><TextInput type="number" placeholder="السعر" value={it.unitPrice} onChange={(e) => setItem(idx, { unitPrice: e.target.value })} /></div>
@@ -1835,7 +2025,7 @@ function AddInvoiceForm({ onAdd, mode, inventory, invoices = [], contacts, custo
       </div>
       <div><FieldLabel>{isReturn ? "المبلغ المعاد / المستلم نقدًا" : "المبلغ المقبوض / المدفوع الآن"}</FieldLabel><TextInput type="number" min="0" max={effectiveAmount} value={paidAmount} disabled={Boolean(initialInvoice)} onChange={(e) => { setPaidAmount(e.target.value); setPaymentStatus(Number(e.target.value) >= effectiveAmount ? "paid" : Number(e.target.value) > 0 ? "partial" : "unpaid"); }} /></div>
       <div><FieldLabel>وصف (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div>
-      <PrimaryButton onClick={submit} full disabled={!effectiveAmount}><Icon name="plus" size={16} /> {initialInvoice ? "حفظ تعديل الفاتورة" : "حفظ الفاتورة"}</PrimaryButton>
+      <PrimaryButton onClick={submit} full disabled={!effectiveAmount || saving}><Icon name="plus" size={16} /> {saving ? "جارٍ الحفظ..." : initialInvoice ? "حفظ تعديل الفاتورة" : "حفظ الفاتورة"}</PrimaryButton>
     </div>
   );
 }
@@ -2052,7 +2242,20 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
   const [expandedInvoiceId, setExpandedInvoiceId] = useState(null);
   const [pendingTxDelete, setPendingTxDelete] = useState(null);
   useEffect(() => setLocal(contact), [contact.id]);
-  const update = (patch) => { const next = { ...local, ...patch }; setLocal(next); onSave(next); };
+  useEffect(() => setLocal((prev) => ({ ...prev, transactions: contact.transactions })), [contact.transactions]);
+  // الاسم والهاتف والملاحظات تُحفظ عند مغادرة الحقل وعلى أحدث نسخة من الحركات، حتى لا تُكتب فوق دفعات مسجلة
+  const update = (patch) => setLocal((prev) => ({ ...prev, ...patch }));
+  const commit = () => {
+    if (!String(local.name || "").trim()) { notify("اسم الجهة لا يمكن أن يكون فارغًا."); setLocal((prev) => ({ ...prev, name: contact.name })); return; }
+    if (local.name === contact.name && local.phone === contact.phone && local.notes === contact.notes) return;
+    onSave({ ...contact, name: local.name.trim(), phone: local.phone, notes: local.notes });
+  };
+  const addManualEntry = async (entry) => {
+    const saved = await upsertBatch([{ collection, record: { ...contact, transactions: [{ id: uid(), ...entry }, ...(contact.transactions || [])] } }]);
+    if (!saved) { notify("تعذر حفظ القيد اليدوي."); return false; }
+    notify("تم حفظ القيد.", "success");
+    return true;
+  };
   const balance = contactBalance(local);
   const transactions = local.transactions || [];
   const linkedInvoices = (invoices || []).filter((invoice) => {
@@ -2120,15 +2323,15 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
     <Modal title={local.name} onClose={onClose} wide>
       <div className="flex flex-col gap-4">
         <div className="grid sm:grid-cols-2 gap-3">
-          <div><FieldLabel>الاسم</FieldLabel><TextInput value={local.name} onChange={(e) => update({ name: e.target.value })} />{isDuplicateName && <div className="text-xs mt-1" style={{ color: "#A34632" }}>يوجد اسم مطابق مسجّل مسبقًا — تأكد أنه ليس تكرارًا لنفس الجهة.</div>}</div>
-          <div><FieldLabel>رقم الهاتف</FieldLabel><TextInput value={local.phone} onChange={(e) => update({ phone: e.target.value })} /></div>
+          <div><FieldLabel>الاسم</FieldLabel><TextInput value={local.name} onChange={(e) => update({ name: e.target.value })} onBlur={commit} />{isDuplicateName && <div className="text-xs mt-1" style={{ color: "#A34632" }}>يوجد اسم مطابق مسجّل مسبقًا — تأكد أنه ليس تكرارًا لنفس الجهة.</div>}</div>
+          <div><FieldLabel>رقم الهاتف</FieldLabel><TextInput value={local.phone || ""} onChange={(e) => update({ phone: e.target.value })} onBlur={commit} /></div>
         </div>
-        <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes} onChange={(e) => update({ notes: e.target.value })} /></div>
+        <div><FieldLabel>ملاحظات</FieldLabel><TextInput value={local.notes || ""} onChange={(e) => update({ notes: e.target.value })} onBlur={commit} /></div>
 
         <div className="rounded-xl p-3 flex items-center justify-between" style={{ background: balance > 0 ? "var(--warn-bg)" : balance < 0 ? "var(--good-bg)" : "var(--divider)" }}>
-          <span className="text-sm" style={{ color: "var(--text-body)" }}>{label === "موردون" ? "الرصيد اليدوي للمورد" : "الرصيد اليدوي للعميل"}</span>
+          <span className="text-sm" style={{ color: "var(--text-body)" }}>{label === "موردون" ? "رصيد حساب المورد" : label === "عمال" ? "رصيد حساب العامل" : "رصيد حساب العميل"}</span>
           <span className="font-bold text-lg" style={{ color: balance > 0 ? "#A34632" : balance < 0 ? "#4B6350" : "var(--text-strong)" }}>
-            {balance === 0 ? "لا يوجد" : balance > 0 ? (label === "موردون" ? `علينا ${fmt(balance)}` : `عليه ${fmt(balance)}`) : (label === "موردون" ? `لنا ${fmt(-balance)}` : `له ${fmt(-balance)}`)}
+            {balance === 0 ? "لا يوجد" : balanceText(balance, label)}
           </span>
         </div>
 
@@ -2157,59 +2360,21 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
                   className="text-xs"
                   style={{ color: "var(--accent)" }}
                   onClick={() => {
-                    const rows = [...transactions].filter((row) => (!statementStart || (row.date || "") >= statementStart) && (!statementEnd || (row.date || "") <= statementEnd)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-                    printAccountStatement(local, rows, label, statementStart || "", statementEnd || "");
+                    printAccountStatement(local, transactions, label, statementStart || "", statementEnd || "", invoices);
                   }}
                 >
                   عرض/طباعة كشف الحساب
                 </button>
               </div>
               <div className="overflow-auto rounded-lg border" style={{ borderColor: "var(--card-border)" }}>
-                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 860 }}>
+                <table style={{ width: "100%", borderCollapse: "collapse", minWidth: 720 }}>
                   <thead>
                     <tr style={{ background: "var(--divider)" }}>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>#</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رقم السند</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>النوع</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>مدين</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>دائن</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>التاريخ</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رصيد المدين</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>رصيد الدائن</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>الرصيد</th>
-                      <th className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>ملاحظات</th>
+                      {["#", "التاريخ", "المرجع", "النوع", label === "موردون" ? "مستحق (علينا)" : label === "عمال" ? "عليه" : "مدين (عليه)", label === "موردون" ? "مسدد / مخصوم" : label === "عمال" ? "له" : "دائن (له)", "الرصيد", "البيان"].map((h) => <th key={h} className="px-2 py-1.5 text-xs" style={{ color: "var(--text-strong)", textAlign: "center" }}>{h}</th>)}
                     </tr>
                   </thead>
                   <tbody>
-                    {(() => {
-                      const rowsFiltered = [...transactions].filter((row) => (!statementStart || (row.date || "") >= statementStart) && (!statementEnd || (row.date || "") <= statementEnd)).sort((a, b) => (a.date || "").localeCompare(b.date || ""));
-                      let runningDebitTotal = 0;
-                      let runningCreditTotal = 0;
-                      let runningBalanceValue = 0;
-                      return rowsFiltered.length === 0 ? (
-                        <tr><td colSpan="10" className="px-2 py-3 text-xs text-center" style={{ color: "var(--text-muted)" }}>لا توجد حركات في هذه المدة</td></tr>
-                      ) : rowsFiltered.map((row, index) => {
-                        const debit = row.type === "debit" ? Number(row.amount || 0) : 0;
-                        const credit = row.type === "credit" ? Number(row.amount || 0) : 0;
-                        runningDebitTotal += debit;
-                        runningCreditTotal += credit;
-                        runningBalanceValue += debit - credit;
-                        return (
-                          <tr key={row.id || index} style={{ borderTop: "1px solid var(--divider)" }}>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{index + 1}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.id || "-"}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.customerPayment ? "قبض" : row.supplierPayment ? "صرف" : row.type === "debit" ? "مدين" : "دائن"}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(debit)}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(credit)}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.date || "-"}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningDebitTotal)}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningCreditTotal)}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{fmt(runningBalanceValue)}</td>
-                            <td className="px-2 py-1.5 text-xs text-center" style={{ color: "var(--text-body)" }}>{row.note || "-"}</td>
-                          </tr>
-                        );
-                      });
-                    })()}
+                    <StatementBody transactions={transactions} start={statementStart} end={statementEnd} invoices={invoices} label={label} />
                   </tbody>
                 </table>
               </div>
@@ -2217,8 +2382,10 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
           )}
         </div>
 
+        <ManualEntryForm label={label} onAdd={addManualEntry} />
+
         <div className="flex flex-col gap-2">
-          <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>سجل حركة {label === "موردون" ? "المورد" : "العميل"}</div>
+          <div className="text-sm font-medium" style={{ color: "var(--text-body)" }}>سجل حركة {label === "موردون" ? "المورد" : label === "عمال" ? "العامل" : "العميل"}</div>
           {transactions.length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات بعد</div> : (
             <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>
               {transactions.map((t) => (
@@ -2602,37 +2769,28 @@ function AddPersonalForm({ onAdd }) {
 }
 
 // ---------- Daily expenses ----------
-function DailyExpensesTab({ expenses, treasury, upsert, remove }) {
+function DailyExpensesTab({ expenses, treasury, upsert, upsertBatch, remove }) {
   const [showForm, setShowForm] = useState(false);
   const [editing, setEditing] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const total = expenses.reduce((sum, item) => sum + Number(item.amount || 0), 0);
-  const save = (expense) => {
+  const save = async (expense) => {
     const currentTreasury = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
     const transaction = { id: uid(), date: expense.date, direction: "out", amount: roundMoney(Number(expense.amount)), expenseId: expense.id, note: expense.category + (expense.description ? " · " + expense.description : "") };
     const retainedTransactions = (currentTreasury.transactions || []).filter((item) => item.expenseId !== expense.id);
     const nextBalance = Number(currentTreasury.openingBalance || 0) + [...retainedTransactions, transaction].reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
     if (nextBalance < 0) { notify("لا يمكن تسجيل المصروف: رصيد الخزينة لا يكفي."); return; }
-    upsert("expenses", expense);
-    upsert("treasury", { ...currentTreasury, transactions: [transaction, ...retainedTransactions] });
+    const saved = await upsertBatch([{ collection: "expenses", record: expense }, { collection: "treasury", record: { ...currentTreasury, transactions: [transaction, ...retainedTransactions] } }]);
+    if (!saved) { notify("تعذر حفظ المصروف وحركته في الخزينة؛ لم يُحفظ شيء."); return; }
     setShowForm(false); setEditing(null);
   };
   const deleteExpense = async (expense) => {
     const currentTreasury = treasury?.[0];
     const hasLinkedCash = (currentTreasury?.transactions || []).some((item) => item.expenseId === expense.id);
-    if (currentTreasury && hasLinkedCash) {
-      const saved = await upsert("treasury", { ...currentTreasury, transactions: currentTreasury.transactions.filter((item) => item.expenseId !== expense.id) }, { throwOnError: false });
-      if (!saved) { notify("تعذر عكس حركة المصروف من الخزينة؛ لم يتم حذف المصروف."); setPendingDelete(null); return; }
-    }
-    const removed = await remove("expenses", expense.id);
-    if (!removed && currentTreasury && hasLinkedCash) {
-      const restored = await upsert("treasury", currentTreasury, { throwOnError: false });
-      notify(restored ? "تعذر حذف المصروف؛ أُعيدت حركة الخزينة كما كانت." : "تعذر حذف المصروف وعكس الخزينة. راجع سجل المصروفات والخزينة للتحقق من التطابق.");
-      setPendingDelete(null);
-      return;
-    }
-    if (!removed) { notify("تعذر حذف المصروف؛ حاول مجددًا."); setPendingDelete(null); return; }
+    const records = currentTreasury && hasLinkedCash ? [{ collection: "treasury", record: { ...currentTreasury, transactions: currentTreasury.transactions.filter((item) => item.expenseId !== expense.id) } }] : [];
+    const ok = await upsertBatch(records, [{ collection: "expenses", id: expense.id }]);
     setPendingDelete(null);
+    if (!ok) { notify("تعذر حذف المصروف؛ لم يتغير المصروف ولا الخزينة."); return; }
     notify("تم حذف المصروف وحركته من الخزينة.", "success");
   };
   const sorted = [...expenses].sort((a, b) => (b.date || "").localeCompare(a.date || ""));
@@ -2649,8 +2807,24 @@ function DailyExpenseForm({ initial, onSave }) {
   const [amount, setAmount] = useState(initial?.amount ? String(initial.amount) : "");
   const [date, setDate] = useState(initial?.date || todayISO());
   const [description, setDescription] = useState(initial?.description || "");
-  const submit = () => { if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; } onSave({ id: initial?.id || uid(), category, amount: roundMoney(Number(amount)), date, description: description.trim() }); };
-  return <div className="flex flex-col gap-3"><div><FieldLabel>بند المصروف</FieldLabel><Select value={category} onChange={(e) => setCategory(e.target.value)}>{EXPENSE_TYPES.map((item) => <option key={item}>{item}</option>)}</Select></div><div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div><div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div><PrimaryButton onClick={submit} full disabled={!amount}>حفظ المصروف</PrimaryButton></div>;
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const submit = async () => {
+    if (savingRef.current) return;
+    if (!positiveNumber(amount)) { notify("أدخل مبلغًا موجبًا."); return; }
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      await onSave({ id: initial?.id || uid(), category, amount: roundMoney(Number(amount)), date, description: description.trim() });
+    } catch (error) {
+      console.error("Expense save failed:", error);
+      notify("تعذر حفظ المصروف؛ لم تكتمل العملية.");
+    } finally {
+      savingRef.current = false;
+      setSaving(false);
+    }
+  };
+  return <div className="flex flex-col gap-3"><div><FieldLabel>بند المصروف</FieldLabel><Select value={category} onChange={(e) => setCategory(e.target.value)}>{EXPENSE_TYPES.map((item) => <option key={item}>{item}</option>)}</Select></div><div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" value={amount} onChange={(e) => setAmount(e.target.value)} /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(e) => setDate(e.target.value)} /></div></div><div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={description} onChange={(e) => setDescription(e.target.value)} /></div><PrimaryButton onClick={submit} full disabled={!amount || saving}>{saving ? "جارٍ الحفظ..." : "حفظ المصروف"}</PrimaryButton></div>;
 }
 
 // ---------- Monthly reports ----------
@@ -2669,7 +2843,11 @@ function MillReportsTab({ month, setMonth, invoices, expenses, customers, suppli
   const currentTreasury = treasury?.[0] || { openingBalance: 0, transactions: [] };
   const cashBalance = Number(currentTreasury.openingBalance || 0) + (currentTreasury.transactions || []).reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
   const lowStock = inventory.filter((item) => Number(item.quantity) <= Number(item.minThreshold || 0));
-  return <div className="flex flex-col gap-5"><div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص المبيعات والمشتريات والمصروفات والمستحقات والخزينة</p></div><TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" /></div>
+  return <div className="flex flex-col gap-5"><div className="flex items-center justify-between flex-wrap gap-3"><div><h1 className="text-xl font-bold" style={{ fontFamily: "'El Messiri', sans-serif", color: "var(--text-strong)" }}>التقارير الشهرية</h1><p className="text-sm mt-0.5" style={{ color: "var(--text-muted)" }}>ملخص المبيعات والمشتريات والمصروفات والمستحقات والخزينة</p></div><div className="flex items-center gap-2"><TextInput type="month" value={month} onChange={(e) => setMonth(e.target.value)} className="max-w-[170px]" /><GhostButton onClick={() => printReportDocument("التقرير الشهري — " + month, [
+      { title: "ملخص الشهر", rows: [["مبيعات الشهر", fmt(sales)], ["مشتريات الشهر", fmt(purchases)], ["تكلفة البضاعة المباعة", fmt(costOfGoodsSold)], ["المصروفات", fmt(expenseTotal)], ["صافي الربح التقريبي", fmt(netProfit)], ["رصيد الخزينة", fmt(cashBalance)], ["قيمة المخزون بالتكلفة", fmt(inventoryValue)]] },
+      { title: "مستحقات العملاء لنا", rows: customerDebts.map((item) => [item.name, fmt(item.balance)]) },
+      { title: "حسابات الموردين", rows: supplierStatements.map((item) => [item.name, item.statement.owed > 0 ? "علينا " + fmt(item.statement.owed) : "لنا " + fmt(item.statement.credit)]) },
+    ])}>طباعة التقرير</GhostButton></div></div>
     <div className="grid grid-cols-2 lg:grid-cols-3 gap-3"><StatCard icon="trendUp" label="مبيعات الشهر" value={fmt(sales)} accent="#4B6350" /><StatCard icon="truck" label="مشتريات الشهر" value={fmt(purchases)} accent="#8A6A32" /><StatCard icon="package" label="تكلفة البضاعة المباعة" value={fmt(costOfGoodsSold)} accent="#8A6A32" /><StatCard icon="trendDown" label="المصروفات" value={fmt(expenseTotal)} accent="#A34632" /><StatCard icon={netProfit >= 0 ? "trendUp" : "trendDown"} label="صافي الربح التقريبي" value={fmt(netProfit)} accent={netProfit >= 0 ? "#4B6350" : "#A34632"} /><StatCard icon="wallet" label="رصيد الخزينة" value={fmt(cashBalance)} accent="#6E8F72" /></div>
     <div className="grid lg:grid-cols-2 gap-4"><ReportList title="مستحقات العملاء لنا" empty="لا توجد مستحقات على العملاء" items={customerDebts.map((item) => ({ name: item.name, value: fmt(item.balance) }))} /><ReportList title="حسابات الموردين" empty="لا توجد مستحقات للموردين" items={supplierStatements.map((item) => ({ name: item.name, value: item.statement.owed > 0 ? "علينا " + fmt(item.statement.owed) : "لنا " + fmt(item.statement.credit) }))} /></div>
     <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>ملخص المخزون</h3><div className="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm"><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>عدد الأصناف</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inventory.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>قيمة المخزون بالتكلفة</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{fmt(inventoryValue)}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>أصناف منخفضة</span><strong className="block mt-1" style={{ color: lowStock.length ? "#A34632" : "#4B6350" }}>{lowStock.length}</strong></div><div><span className="text-xs" style={{ color: "var(--text-muted)" }}>حركات الشهر</span><strong className="block mt-1" style={{ color: "var(--text-strong)" }}>{inMonth(inventoryMovements).length}</strong></div></div></div>
@@ -2681,8 +2859,8 @@ function ReportList({ title, empty, items }) { return <div className="rounded-2x
 const CASHFLOW_PAYMENT_MODES = {
   customerReceipt: { partyType: "customer", cashDirection: "in", ledgerType: "credit", transactionFlag: "customerPayment", title: "سند قبض من عميل", action: "قبض من عميل", partyLabel: "العميل", ledgerLabel: "قبض من العميل", notePlaceholder: "مثال: سداد دفعة الفاتورة", allocationMethod: "customer", success: "تم تسجيل القبض وتحديث حساب العميل والخزينة." },
   supplierPayment: { partyType: "supplier", cashDirection: "out", ledgerType: "credit", transactionFlag: "supplierPayment", title: "سند صرف إلى مورد", action: "صرف إلى مورد", partyLabel: "المورد", ledgerLabel: "صرف إلى المورد", notePlaceholder: "مثال: دفعة للمورد", allocationMethod: "supplier", success: "تم تسجيل الصرف وتحديث حساب المورد والخزينة." },
-  customerRefund: { partyType: "customer", cashDirection: "out", ledgerType: "debit", transactionFlag: "customerRefund", title: "سند صرف إلى عميل", action: "صرف إلى عميل", partyLabel: "العميل", ledgerLabel: "صرف إلى العميل", notePlaceholder: "مثال: رد دفعة أو مبلغ مرتجع", allocationMethod: null, success: "تم تسجيل الصرف للعميل وتحديث حسابه والخزينة." },
-  supplierReceipt: { partyType: "supplier", cashDirection: "in", ledgerType: "credit", transactionFlag: "supplierReceipt", title: "سند قبض من مورد", action: "قبض من مورد", partyLabel: "المورد", ledgerLabel: "قبض من المورد", notePlaceholder: "مثال: استرداد مبلغ مرتجع أو دفعة زائدة", allocationMethod: "supplier", success: "تم تسجيل القبض من المورد وتحديث حسابه وفواتيره والخزينة." },
+  customerRefund: { partyType: "customer", cashDirection: "out", ledgerType: "debit", transactionFlag: "customerRefund", title: "سند صرف إلى عميل", action: "صرف إلى عميل", partyLabel: "العميل", ledgerLabel: "صرف إلى العميل", notePlaceholder: "مثال: رد دفعة أو مبلغ مرتجع", allocationMethod: null, help: "سيُسجّل المبلغ كصرف للعميل، فيُخصم من رصيده الدائن إن وجد. لا يغيّر هذا السند سداد فاتورة بيع مباشرة.", success: "تم تسجيل الصرف للعميل وتحديث حسابه والخزينة." },
+  supplierReceipt: { partyType: "supplier", cashDirection: "in", ledgerType: "debit", transactionFlag: "supplierReceipt", title: "سند قبض من مورد", action: "قبض من مورد", partyLabel: "المورد", ledgerLabel: "قبض من المورد", notePlaceholder: "مثال: استرداد مبلغ مرتجع أو دفعة زائدة", allocationMethod: null, help: "سيُسجَّل المبلغ كقبض من المورد (استرداد نقدي): يزيد المستحق علينا له أو يخفض رصيده الدائن لدينا، ولا يغيّر سداد أي فاتورة شراء.", success: "تم تسجيل القبض من المورد وتحديث حسابه والخزينة." },
 };
 
 function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, record, upsertBatch, onClose }) {
@@ -2693,6 +2871,7 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
   const [date, setDate] = useState(todayISO());
   const [note, setNote] = useState("");
   const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
   const party = parties.find((item) => item.id === partyId);
   const cashBalance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
   const getAllocations = (value) => {
@@ -2700,6 +2879,7 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
     return config.allocationMethod === "customer" ? allocateCustomerPayment(party, invoices, value) : allocateSupplierPayment(party, invoices, value);
   };
   const submit = async () => {
+    if (savingRef.current) return;
     const value = roundMoney(Number(amount));
     if (!party) { notify(`اختر ${config.partyLabel} أولًا.`); return; }
     if (!positiveNumber(value)) { notify("أدخل مبلغًا موجبًا صحيحًا."); return; }
@@ -2740,6 +2920,7 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
       });
     });
 
+    savingRef.current = true;
     setSaving(true);
     try {
       const records = [
@@ -2755,6 +2936,7 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
       console.error("Payment posting failed", error);
       notify("تعذر حفظ السند: " + (error?.message || "خطأ غير معروف"));
     } finally {
+      savingRef.current = false;
       setSaving(false);
     }
   };
@@ -2765,7 +2947,7 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
     <div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={note} onChange={(event) => setNote(event.target.value)} placeholder={config.notePlaceholder} /></div>
     <div className="rounded-lg p-3 text-xs leading-6" style={{ background: "var(--divider)", color: "var(--text-body)" }}>
       {config.cashDirection === "out" && <div><strong>رصيد الخزينة المتاح:</strong> {fmt(cashBalance)}</div>}
-      {config.allocationMethod ? <div>سيتم توزيع المبلغ على أقدم الفواتير المستحقة{config.partyType === "customer" ? " للعميل" : " للمورد"}. والفائض يسوّي أي رصيد يدوي قائم أولًا، ثم يظهر رصيدًا دائنًا للجهة.</div> : <div>سيُسجّل المبلغ كصرف للعميل، فيُخصم من رصيده الدائن إن وجد. لا يغيّر هذا السند سداد فاتورة بيع مباشرة.</div>}
+      {config.allocationMethod ? <div>سيتم توزيع المبلغ على أقدم الفواتير المستحقة{config.partyType === "customer" ? " للعميل" : " للمورد"}. والفائض يسوّي أي رصيد يدوي قائم أولًا، ثم يظهر رصيدًا دائنًا للجهة.</div> : <div>{config.help}</div>}
       {party && config.allocationMethod && <div><strong>الفواتير التي سيُخصّص لها المبلغ:</strong> {allocationsPreview.length ? allocationsPreview.map((allocation) => {
         const invoice = invoices.find((item) => item.id === allocation.invoiceId);
         return `#${invoice?.invoiceNumber || invoice?.id}: ${fmt(allocation.amount)}`;
@@ -2806,7 +2988,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
                   <div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div>
                   <div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date || "-"} · {tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source === "manual" ? "يدوي" : tx.source || "حركة يدوية"}</div>
                 </div>
-                <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{pendingDelete === "cash:" + tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete("cash:" + tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div>
+                <div className="flex items-center gap-2 shrink-0"><span className="font-medium" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span><button onClick={() => printVoucher(tx)} className="text-xs" style={{ color: "var(--accent)" }}>طباعة</button>{pendingDelete === "cash:" + tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete("cash:" + tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div>
               </div>
             ))}
           </div>
@@ -2862,9 +3044,12 @@ function TreasuryTab({ treasury, upsert, onDeleteCashMovement }) {
   const [manualDate, setManualDate] = useState(todayISO());
   const [manualNote, setManualNote] = useState("");
   const [editingId, setEditingId] = useState(null);
+  const [stStart, setStStart] = useState("");
+  const [stEnd, setStEnd] = useState("");
   const [pendingDelete, setPendingDelete] = useState(null);
   const balance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
   const saveOpening = () => {
+    if ((record.transactions || []).length > 0 && !window.confirm("تعديل المبلغ الأساسي يغيّر رصيد الخزينة وكل التقارير. هل أنت متأكد؟")) return;
     if (!nonNegativeNumber(openingBalance)) { notify("أدخل مبلغًا أساسيًا غير سالب."); return; }
     const movements = (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
     if (Number(openingBalance) + movements < 0) { notify("لا يمكن حفظ مبلغ أساسي يجعل رصيد الخزينة سالبًا."); return; }
@@ -2890,7 +3075,8 @@ function TreasuryTab({ treasury, upsert, onDeleteCashMovement }) {
     <div className="grid sm:grid-cols-3 gap-3"><StatCard icon="wallet" label="الرصيد الحالي" value={fmt(balance)} accent={balance >= 0 ? "#4B6350" : "#A34632"} /> <StatCard icon="trendUp" label="إجمالي القبض" value={fmt((record.transactions || []).filter((tx) => tx.direction === "in").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#6E8F72" /><StatCard icon="trendDown" label="إجمالي الصرف" value={fmt((record.transactions || []).filter((tx) => tx.direction === "out").reduce((sum, tx) => sum + Number(tx.amount || 0), 0))} accent="#A34632" /></div>
     <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>المبلغ الأساسي للخزينة</FieldLabel><div className="flex gap-2"><TextInput type="number" value={openingBalance} onChange={(e) => setOpeningBalance(e.target.value)} /><PrimaryButton onClick={saveOpening}>حفظ المبلغ الأساسي</PrimaryButton></div></div>
     <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>{editingId ? "تعديل حركة يدوية" : "إضافة حركة يدوية"}</FieldLabel><div className="grid sm:grid-cols-4 gap-2"><Select value={manualDirection} onChange={(e) => setManualDirection(e.target.value)}><option value="in">قبض</option><option value="out">صرف</option></Select><TextInput type="number" placeholder="المبلغ" value={manualAmount} onChange={(e) => setManualAmount(e.target.value)} /><TextInput type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} /><TextInput placeholder="البيان" value={manualNote} onChange={(e) => setManualNote(e.target.value)} /></div><div className="flex gap-2"><PrimaryButton onClick={addManualTransaction} disabled={!manualAmount}><Icon name="plus" size={15} /> {editingId ? "حفظ التعديل" : "تسجيل الحركة"}</PrimaryButton>{editingId && <GhostButton onClick={() => { setEditingId(null); setManualAmount(""); setManualNote(""); }}>إلغاء</GhostButton>}</div></div>
-    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b gap-3" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date} · {tx.source === "manual" ? "يدوي" : tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source || "حركة"}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span>{tx.source === "manual" && <button onClick={() => editManualTransaction(tx)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button>}{pendingDelete === tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete(tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div></div>)}</div>}
+    <div className="rounded-2xl border p-4 flex flex-col gap-3" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><FieldLabel>كشف حساب الخزينة (طباعة)</FieldLabel><div className="grid grid-cols-2 gap-2"><div><FieldLabel>من تاريخ</FieldLabel><TextInput type="date" value={stStart} onChange={(e) => setStStart(e.target.value)} /></div><div><FieldLabel>إلى تاريخ</FieldLabel><TextInput type="date" value={stEnd} onChange={(e) => setStEnd(e.target.value)} /></div></div><div><GhostButton onClick={() => printTreasuryStatement(record, stStart, stEnd)}>طباعة كشف الخزينة</GhostButton></div></div>
+    {(record.transactions || []).length === 0 ? <EmptyState icon="wallet" title="لا توجد حركات خزينة بعد" /> : <div className="rounded-2xl border overflow-hidden" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}>{[...(record.transactions || [])].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((tx) => <div key={tx.id} className="flex items-center justify-between px-4 py-3 border-b gap-3" style={{ borderColor: "var(--divider)" }}><div><div className="text-sm" style={{ color: "var(--text-body)" }}>{tx.note || (tx.direction === "in" ? "قبض" : "صرف")}</div><div className="text-xs" style={{ color: "var(--text-muted)" }}>{tx.date} · {tx.source === "manual" ? "يدوي" : tx.source === "contact-payment" ? "سند عميل/مورد" : tx.source === "invoice" ? "فاتورة" : tx.source === "invoice-return" ? "مرتجع" : tx.expenseId ? "مصروف" : tx.source || "حركة"}</div></div><div className="flex items-center gap-3"><span className="font-semibold" style={{ color: tx.direction === "in" ? "#4B6350" : "#A34632" }}>{tx.direction === "in" ? "+" : "−"}{fmt(tx.amount)}</span><button onClick={() => printVoucher(tx)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة</button>{tx.source === "manual" && <button onClick={() => editManualTransaction(tx)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل</button>}{pendingDelete === tx.id ? <ConfirmInline label="عكس الحركة؟" onConfirm={async () => { if (await onDeleteCashMovement(tx)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <button aria-label="حذف حركة الخزينة" title="حذف الحركة وعكس قيودها المرتبطة" onClick={() => setPendingDelete(tx.id)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>}</div></div>)}</div>}
   </div>;
 }
 
