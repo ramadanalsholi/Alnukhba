@@ -127,6 +127,67 @@ $$;
 revoke all on function public.upsert_app_records_batch(uuid, jsonb) from public, anon;
 grant execute on function public.upsert_app_records_batch(uuid, jsonb) to authenticated;
 
+-- Atomic upsert + delete in ONE transaction (used for deleting invoices/expenses and reversing their entries).
+-- Deleting requires the 'owner' role; members can still create and edit records.
+create or replace function public.apply_app_records_batch(p_organization_id uuid, p_upserts jsonb default '[]'::jsonb, p_deletes jsonb default '[]'::jsonb)
+returns void
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  item jsonb;
+  target_collection text;
+  target_id text;
+  affected_rows integer;
+begin
+  if auth.uid() is null then
+    raise exception 'Authentication required';
+  end if;
+  if p_organization_id is null or not exists (
+    select 1 from public.organization_members m
+    where m.organization_id = p_organization_id and m.user_id = auth.uid()
+  ) then
+    raise exception 'Organization access denied';
+  end if;
+  if jsonb_typeof(coalesce(p_deletes, '[]'::jsonb)) is distinct from 'array'
+     or jsonb_typeof(coalesce(p_upserts, '[]'::jsonb)) is distinct from 'array' then
+    raise exception 'Upserts and deletes must be JSON arrays';
+  end if;
+  if jsonb_array_length(coalesce(p_deletes, '[]'::jsonb)) > 0 and not exists (
+    select 1 from public.organization_members m
+    where m.organization_id = p_organization_id and m.user_id = auth.uid() and m.role = 'owner'
+  ) then
+    raise exception 'الحذف مسموح لمالك الشركة فقط';
+  end if;
+
+  if jsonb_array_length(coalesce(p_upserts, '[]'::jsonb)) > 0 then
+    perform public.upsert_app_records_batch(p_organization_id, p_upserts);
+  end if;
+
+  for item in select value from jsonb_array_elements(coalesce(p_deletes, '[]'::jsonb))
+  loop
+    target_collection := item->>'collection';
+    target_id := item->>'id';
+    if target_collection is null or target_collection not in (
+      'invoices', 'inventory', 'inventoryMovements', 'customers', 'suppliers',
+      'workers', 'attendance', 'treasury', 'expenses'
+    ) or target_id is null or length(trim(target_id)) = 0 then
+      raise exception 'Invalid delete target';
+    end if;
+    delete from public.app_records
+    where organization_id = p_organization_id and collection = target_collection and id = target_id;
+    get diagnostics affected_rows = row_count;
+    if affected_rows <> 1 then
+      raise exception 'Target record not found; batch was rolled back';
+    end if;
+  end loop;
+end;
+$$;
+
+revoke all on function public.apply_app_records_batch(uuid, jsonb, jsonb) from public, anon;
+grant execute on function public.apply_app_records_batch(uuid, jsonb, jsonb) to authenticated;
+
 create or replace function public.get_or_create_my_organization(p_name text, p_code text default '')
 returns table (id uuid, organization_id uuid, name text, invite_code text)
 language plpgsql
@@ -275,3 +336,6 @@ begin
   end if;
 end;
 $$;
+
+-- Longer invite codes for new companies (12 hex chars instead of 8). Existing codes keep working.
+alter table public.organizations alter column invite_code set default upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 12));
