@@ -2909,19 +2909,22 @@ function InventoryTab({ inventory, inventoryMovements, invoices, upsert, upsertB
     ]);
     if (!saved) notify("تعذر حفظ تعديل المخزون وحركته؛ لم يتم تطبيق التعديل.");
   };
-  const deleteItem = (item) => {
+  const deleteItem = async (item) => {
     if (invoices.some((invoice) => (invoice.items || []).some((line) => line.inventoryId === item.id || (!line.inventoryId && normalizeName(line.name) === normalizeName(item.name))))) {
       notify(`لا يمكن حذف «${item.name}» لارتباطه بفواتير.`);
       setPendingDelete(null);
       return;
     }
-    if ((inventoryMovements || []).some((movement) => movement.itemId === item.id)) {
-      notify(`لا يمكن حذف «${item.name}» لوجود سجل حركات مخزون مرتبط بها.`);
+    const currentQuantity = roundMoney(Number(item.quantity || 0));
+    if (currentQuantity !== 0) {
+      notify(`لا يمكن حذف «${item.name}» قبل تصفير رصيده الحالي (${fmt(currentQuantity)} ${item.unit || ""}). سجّل نقصًا موثقًا أولًا.`);
       setPendingDelete(null);
       return;
     }
-    remove("inventory", item.id);
+    const removed = await remove("inventory", item.id);
     setPendingDelete(null);
+    if (!removed) { notify(`تعذر حذف «${item.name}»؛ لم يتغير المخزون.`); return; }
+    notify(`تم حذف «${item.name}». بقي سجل حركاته السابق محفوظًا للتدقيق.`, "success");
   };
   const deleteMovement = async (movement) => {
     if (movement.source === "invoice" || movement.source === "invoice-return") {
@@ -2977,7 +2980,7 @@ function InventoryTab({ inventory, inventoryMovements, invoices, upsert, upsertB
           })}
         </div>
       )}
-      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>سجل حركات المخزن</h3>{(inventoryMovements || []).length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات مسجلة بعد</div> : <div className="max-h-96 overflow-y-auto">{[...inventoryMovements].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((movement) => { const linkedInvoice = (movement.source === "invoice" || movement.source === "invoice-return") ? invoices.find((invoice) => invoice.id === movement.invoiceId) : null; const deleteKey = "movement:" + movement.id; const movementSource = linkedInvoice ? `فاتورة #${linkedInvoice.invoiceNumber || linkedInvoice.id}` : movement.source === "manual-reversal" || movement.source === "invoice-delete" ? "قيد عكس نظامي" : movement.source === "invoice" || movement.source === "invoice-return" ? "فاتورة محذوفة (سجل تاريخي)" : "يدوي"; return <div key={movement.id} className="flex items-center justify-between gap-3 py-2 border-b text-xs" style={{ borderColor: "var(--divider)" }}><div className="min-w-0"><div style={{ color: "var(--text-body)" }}>{movement.itemName} · {movement.note}{movement.voided ? " · ملغاة" : ""}</div><div style={{ color: "var(--text-muted)" }}>{movement.date} · {movementSource}</div></div><div className="flex items-center gap-2 shrink-0"><span style={{ color: movement.direction === "in" ? "#4B6350" : "#A34632" }}>{movement.direction === "in" ? "+" : "−"}{fmt(movement.quantity)}</span>{(movement.source === "manual" && !movement.voided || linkedInvoice) && (pendingMovementDelete === deleteKey ? <ConfirmInline label={linkedInvoice ? "حذف الفاتورة؟" : "عكس الحركة؟"} onConfirm={() => deleteMovement(movement)} onCancel={() => setPendingMovementDelete(null)} /> : <button aria-label="حذف حركة المخزون" title={linkedInvoice ? "حذف الفاتورة وعكس المخزون والحسابات" : "عكس حركة المخزون"} onClick={() => setPendingMovementDelete(deleteKey)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div></div>; })}</div>}</div>
+      <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>سجل حركات المخزن</h3>{(inventoryMovements || []).length === 0 ? <div className="text-xs" style={{ color: "var(--text-muted)" }}>لا توجد حركات مسجلة بعد</div> : <div className="max-h-96 overflow-y-auto">{[...inventoryMovements].sort((a, b) => (b.date || "").localeCompare(a.date || "")).map((movement) => { const linkedInvoice = (movement.source === "invoice" || movement.source === "invoice-return") ? invoices.find((invoice) => invoice.id === movement.invoiceId) : null; const stockItemExists = inventory.some((item) => item.id === movement.itemId); const deleteKey = "movement:" + movement.id; const movementSource = linkedInvoice ? `فاتورة #${linkedInvoice.invoiceNumber || linkedInvoice.id}` : !stockItemExists ? "صنف محذوف (سجل تاريخي)" : movement.source === "manual-reversal" || movement.source === "invoice-delete" ? "قيد عكس نظامي" : movement.source === "invoice" || movement.source === "invoice-return" ? "فاتورة محذوفة (سجل تاريخي)" : "يدوي"; return <div key={movement.id} className="flex items-center justify-between gap-3 py-2 border-b text-xs" style={{ borderColor: "var(--divider)" }}><div className="min-w-0"><div style={{ color: "var(--text-body)" }}>{movement.itemName} · {movement.note}{movement.voided ? " · ملغاة" : ""}</div><div style={{ color: "var(--text-muted)" }}>{movement.date} · {movementSource}</div></div><div className="flex items-center gap-2 shrink-0"><span style={{ color: movement.direction === "in" ? "#4B6350" : "#A34632" }}>{movement.direction === "in" ? "+" : "−"}{fmt(movement.quantity)}</span>{(movement.source === "manual" && !movement.voided && stockItemExists || linkedInvoice) && (pendingMovementDelete === deleteKey ? <ConfirmInline label={linkedInvoice ? "حذف الفاتورة؟" : "عكس الحركة؟"} onConfirm={() => deleteMovement(movement)} onCancel={() => setPendingMovementDelete(null)} /> : <button aria-label="حذف حركة المخزون" title={linkedInvoice ? "حذف الفاتورة وعكس المخزون والحسابات" : "عكس حركة المخزون"} onClick={() => setPendingMovementDelete(deleteKey)} style={{ color: "var(--text-muted)" }}><Icon name="trash" size={13} /></button>)}</div></div>; })}</div>}</div>
       {showAdd && <Modal title="مادة جديدة في المخزون" onClose={() => setShowAdd(false)}><AddInventoryForm existing={inventory} onAdd={async (item) => { const records = [{ collection: "inventory", record: item }]; if (Number(item.quantity) > 0) records.push({ collection: "inventoryMovements", record: { id: uid(), date: todayISO(), itemId: item.id, itemName: item.name, direction: "in", quantity: Number(item.quantity), source: "manual", note: "رصيد افتتاحي" } }); if (!await upsertBatch(records)) { notify("تعذر حفظ مادة المخزون؛ حاول مجددًا."); return; } setShowAdd(false); }} /></Modal>}
     </div>
   );
