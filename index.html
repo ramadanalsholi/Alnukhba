@@ -118,6 +118,12 @@ const getInvoiceLaterPaymentsAmount = (invoice, customers = [], suppliers = []) 
 const getInvoiceReturnedAmount = (invoiceId, invoices = []) => invoices.filter((invoice) => invoice.isReturn && invoice.returnForInvoiceId === invoiceId).reduce((sum, invoice) => sum + Number(invoice.amount || 0), 0);
 const getInvoiceOutstanding = (invoice, invoices = []) => roundMoney(Math.max(0, Number(invoice.amount || 0) - getInvoicePaidAmount(invoice) - getInvoiceReturnedAmount(invoice.id, invoices)));
 const getInvoicePaymentStatus = (invoice, invoices = []) => getInvoiceOutstanding(invoice, invoices) === 0 ? "paid" : getInvoicePaidAmount(invoice) > 0 ? "partial" : "unpaid";
+const getBulkSettlementsForTransaction = (contact, transactionId) => (contact?.bulkSettlements || []).filter((settlement) => (settlement.transactionIds || []).includes(transactionId));
+const formatSettlementDateTime = (value) => {
+  if (!value) return "";
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? "" : date.toLocaleString("ar-LY", { dateStyle: "short", timeStyle: "short" });
+};
 const monthKey = (iso) => (iso || "").slice(0, 7);
 const normalizeName = (value) => String(value || "").trim().replace(/\s+/g, " ").toLocaleLowerCase("ar");
 const hasDuplicateName = (items, name, currentId = null) => (items || []).some((item) => item.id !== currentId && normalizeName(item.name) === normalizeName(name));
@@ -795,14 +801,25 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
   });
 
   const handleDeleteContactMovement = async (partyType, partyId, transactionId) => {
-    const collection = partyType === "supplier" ? "suppliers" : "customers";
-    const parties = partyType === "supplier" ? suppliers : customers;
+    const collection = partyType === "supplier" ? "suppliers" : partyType === "worker" ? "workers" : "customers";
+    const parties = partyType === "supplier" ? suppliers : partyType === "worker" ? workers : customers;
     const contact = parties.find((item) => item.id === partyId);
     const transaction = contact?.transactions?.find((item) => item.id === transactionId);
     if (!contact || !transaction) { notify("تعذر العثور على الحركة المراد حذفها."); return false; }
     if (transaction.invoiceDebt || transaction.invoiceReturn) {
       notify("هذه الحركة ناتجة عن فاتورة؛ احذف الفاتورة من قسم المبيعات أو المشتريات لعكسها بأمان.");
       return false;
+    }
+    const affectedSettlements = getBulkSettlementsForTransaction(contact, transaction.id);
+    let affectedInvoiceCount = 0;
+    if (affectedSettlements.length) {
+      const snapshots = affectedSettlements.flatMap((settlement) => settlement.invoiceSnapshots || []);
+      const affectedInvoices = [...new Set(snapshots.map((snapshot) => snapshot.invoiceId))].map((id) => invoices.find((invoice) => invoice.id === id)).filter((invoice) => invoice?.bulkSettlement && affectedSettlements.some((settlement) => settlement.id === invoice.bulkSettlement.id));
+      affectedInvoiceCount = affectedInvoices.length;
+      const invoiceLabels = affectedInvoices.map((invoice) => `#${invoice.invoiceNumber || invoice.id}`).join("، ");
+      const settledDates = [...new Set(affectedSettlements.map((settlement) => formatSettlementDateTime(settlement.settledAt)).filter(Boolean))].join("، ");
+      const warning = `تنبيه قبل الحذف: هذه الحركة دخلت في تسوية جماعية بتاريخ ${settledDates || "غير محدد"}. حذفها سيزيل علامة السداد عن ${affectedInvoices.length} فاتورة${invoiceLabels ? ` (${invoiceLabels})` : ""} ويعيدها إلى حالتها السابقة، بالإضافة إلى عكس حركة الخزينة إن وُجدت. هل تريد المتابعة؟`;
+      if (!window.confirm(warning)) return false;
     }
     const currentTreasury = treasury?.[0];
     let updatedTreasury = currentTreasury;
@@ -813,6 +830,11 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
       if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن عكسها سيجعل رصيد الخزينة سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); return false; }
       updatedTreasury = { ...currentTreasury, transactions: remaining };
     }
+    const affectedSnapshotByInvoice = new Map();
+    affectedSettlements.forEach((settlement) => (settlement.invoiceSnapshots || []).forEach((snapshot) => {
+      const invoice = invoices.find((item) => item.id === snapshot.invoiceId);
+      if (invoice?.bulkSettlement?.id === settlement.id) affectedSnapshotByInvoice.set(snapshot.invoiceId, snapshot);
+    }));
     const changedInvoices = new Map();
     if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
       const allocations = Array.isArray(transaction.allocations) && transaction.allocations.length
@@ -823,18 +845,36 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
       allocationTotals.forEach((allocatedAmount, invoiceId) => {
         const invoice = invoices.find((item) => item.id === invoiceId);
         if (!invoice) return;
-        const paidAmount = roundMoney(Math.max(0, getInvoicePaidAmount(invoice) - allocatedAmount));
-        const initialPaidAmount = getInvoiceInitialPaidAmount(invoice, transaction.customerPayment ? [contact] : [], transaction.supplierPayment || transaction.supplierReceipt ? [contact] : []);
+        const snapshot = affectedSnapshotByInvoice.get(invoice.id);
+        const previousPaidAmount = snapshot ? Number(snapshot.previousPaidAmount || 0) : getInvoicePaidAmount(invoice);
+        const paidAmount = roundMoney(Math.max(0, previousPaidAmount - allocatedAmount));
+        const initialPaidAmount = snapshot && snapshot.previousInitialPaidAmount != null
+          ? Number(snapshot.previousInitialPaidAmount)
+          : getInvoiceInitialPaidAmount({ ...invoice, paidAmount: previousPaidAmount }, transaction.customerPayment ? [contact] : [], transaction.supplierPayment || transaction.supplierReceipt ? [contact] : []);
         const adjustedInitialPaidAmount = transaction.id === "invoice-payment-" + invoice.id ? roundMoney(Math.max(0, initialPaidAmount - allocatedAmount)) : initialPaidAmount;
-        changedInvoices.set(invoice.id, { ...invoice, paidAmount, initialPaidAmount: adjustedInitialPaidAmount, paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices) });
+        const { bulkSettlement, ...invoiceBase } = invoice;
+        changedInvoices.set(invoice.id, { ...invoiceBase, paidAmount, initialPaidAmount: adjustedInitialPaidAmount, paymentStatus: getInvoicePaymentStatus({ ...invoiceBase, paidAmount }, invoices) });
       });
     }
-    const records = [{ collection, record: { ...contact, transactions: contact.transactions.filter((item) => item.id !== transaction.id) } }];
+    const invalidatedIds = new Set(affectedSettlements.map((settlement) => settlement.id));
+    const remainingSettlements = (contact.bulkSettlements || []).filter((settlement) => !invalidatedIds.has(settlement.id));
+    const updatedContact = { ...contact, transactions: contact.transactions.filter((item) => item.id !== transaction.id), bulkSettlements: remainingSettlements };
+    const records = [{ collection, record: updatedContact }];
     if (updatedTreasury && updatedTreasury !== currentTreasury) records.push({ collection: "treasury", record: updatedTreasury });
+    affectedSettlements.forEach((settlement) => (settlement.invoiceSnapshots || []).forEach((snapshot) => {
+      const invoice = invoices.find((item) => item.id === snapshot.invoiceId);
+      if (!invoice || invoice.bulkSettlement?.id !== settlement.id || changedInvoices.has(invoice.id)) return;
+      const { bulkSettlement, ...restoredBase } = invoice;
+      const restored = { ...restoredBase, paidAmount: roundMoney(Number(snapshot.previousPaidAmount || 0)) };
+      if (snapshot.previousInitialPaidAmount == null) delete restored.initialPaidAmount;
+      else restored.initialPaidAmount = Number(snapshot.previousInitialPaidAmount);
+      restored.paymentStatus = getInvoicePaymentStatus(restored, invoices);
+      changedInvoices.set(invoice.id, restored);
+    }));
     records.push(...Array.from(changedInvoices.values()).map((invoice) => ({ collection: "invoices", record: invoice })));
     const saved = await upsertBatch(records);
     if (!saved) { notify("تعذر حفظ عكس الحركة؛ لم يتم حذفها. تحقق من الاتصال ثم حاول مجددًا."); return false; }
-    notify("تم حذف الحركة وعكس أثرها على الحسابات والفواتير والخزينة.", "success");
+    notify(affectedSettlements.length ? `تم حذف السند وإلغاء التسوية الجماعية وإعادة فتح الفواتير (${affectedInvoiceCount}) مع عكس الخزينة.` : "تم حذف الحركة وعكس أثرها على الحسابات والفواتير والخزينة.", "success");
     return true;
   };
 
@@ -967,12 +1007,12 @@ function FactoryApp({ organizationId, organizationCode, email, onSignOut }) {
         )}
         {tab === "purchases" && <InvoicesTab mode="purchase" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
         {tab === "sales" && <InvoicesTab mode="sale" invoices={invoices} inventory={inventory} suppliers={suppliers} customers={customers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
-        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteContactMovement={handleDeleteContactMovement} onDeleteCashMovement={handleDeleteCashMovement} />}
+        {tab === "cashflow" && <CashflowTab customers={customers} suppliers={suppliers} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteContactMovement={handleDeleteContactMovement} onDeleteCashMovement={handleDeleteCashMovement} />}
         {tab === "treasury" && <TreasuryTab treasury={treasury} upsert={upsert} onDeleteCashMovement={handleDeleteCashMovement} />}
         {tab === "expenses" && <DailyExpensesTab expenses={expenses} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />}
         {tab === "accounts" && (
           <AccountsTab sub={accountsSub} setSub={setAccountsSub}
-            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} />
+            customers={customers} suppliers={suppliers} workers={workers} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteMovement={handleDeleteContactMovement} />
         )}
         {tab === "inventory" && <InventoryTab inventory={inventory} inventoryMovements={inventoryMovements} invoices={invoices} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteInvoice={handleDeleteInvoice} />}
         {tab === "reports" && <MillReportsTab month={reportMonth} setMonth={setReportMonth} invoices={invoices} expenses={expenses} customers={customers} suppliers={suppliers} inventory={inventory} inventoryMovements={inventoryMovements} treasury={treasury} />}
@@ -1632,6 +1672,14 @@ async function deleteInvoiceAndReverse(invoice, { mode, invoices, inventory, sup
     }
   }
   const records = [];
+  const removeInvoiceFromSettlementHistory = (contact, transactions) => ({
+    ...contact,
+    transactions,
+    bulkSettlements: (contact.bulkSettlements || []).map((settlement) => ({
+      ...settlement,
+      invoiceSnapshots: (settlement.invoiceSnapshots || []).filter((snapshot) => snapshot.invoiceId !== invoice.id),
+    })).filter((settlement) => (settlement.invoiceSnapshots || []).length > 0),
+  });
   for (const [itemId, delta] of stockChanges) {
     const item = inventory.find((entry) => entry.id === itemId);
     const quantity = roundMoney(Number(item.quantity || 0) + delta);
@@ -1641,9 +1689,9 @@ async function deleteInvoiceAndReverse(invoice, { mode, invoices, inventory, sup
   }
   if (currentTreasury) records.push({ collection: "treasury", record: { ...currentTreasury, transactions: (currentTreasury.transactions || []).filter((tx) => tx.invoiceId !== invoice.id) } });
   const supplier = suppliers.find((item) => item.id === (invoice.supplierId || invoice.contactId));
-  if (supplier) records.push({ collection: "suppliers", record: { ...supplier, transactions: (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء"))) } });
+  if (supplier) records.push({ collection: "suppliers", record: removeInvoiceFromSettlementHistory(supplier, (supplier.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.debtTransactionId && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة شراء")))) });
   const customer = customers.find((item) => item.id === (invoice.customerId || invoice.contactId));
-  if (customer) records.push({ collection: "customers", record: { ...customer, transactions: (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع"))) } });
+  if (customer) records.push({ collection: "customers", record: removeInvoiceFromSettlementHistory(customer, (customer.transactions || []).filter((t) => t.invoiceId !== invoice.id && t.id !== invoice.contactTransactionId && !(t.date === invoice.date && Number(t.amount) === Number(invoice.amount) && String(t.note || "").includes("فاتورة بيع")))) });
   const saved = await upsertBatch(records, [{ collection: "invoices", id: invoice.id }]);
   if (!saved) { notify("تعذر حذف الفاتورة؛ لم يتغير شيء (لا الفاتورة ولا المخزون ولا الحسابات ولا الخزينة)."); return false; }
   notify("تم حذف الفاتورة وعكس المخزون والحساب والخزينة.", "success");
@@ -1792,6 +1840,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                     <div className="text-xs flex items-center gap-1.5 mt-0.5 flex-wrap" style={{ color: "var(--text-muted)" }}>
                       {inv.isReturn && <Badge bg="var(--warn-bg)" fg="#A34632">مرتجع</Badge>}
                       {!inv.isReturn && <Badge bg={getInvoicePaymentStatus(inv, invoices) === "paid" ? "var(--good-bg)" : "var(--warn-bg)"} fg={getInvoicePaymentStatus(inv, invoices) === "paid" ? "#4B6350" : "#A34632"}>{getInvoicePaymentStatus(inv, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(inv, invoices) === "partial" ? "جزئية" : "غير مسددة"}</Badge>}
+                      {inv.bulkSettlement && <Badge bg="var(--good-bg)" fg="#4B6350">تسوية جماعية · {formatSettlementDateTime(inv.bulkSettlement.settledAt)}</Badge>}
                       {inv.date}
                       {(inv.items || []).length > 0 && <span>· {inv.items.length} بند</span>}
                     </div>
@@ -1815,7 +1864,7 @@ function InvoicesTab({ mode, invoices, inventory, suppliers, customers, treasury
                       </div>
                     )}
                     <div className="flex justify-end">
-                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={async () => { if (await deleteInvoice(inv)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{<button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}<button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button><button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
+                      {pendingDelete === inv.id ? <ConfirmInline onConfirm={async () => { if (await deleteInvoice(inv)) setPendingDelete(null); }} onCancel={() => setPendingDelete(null)} /> : <div className="flex items-center gap-3">{<button onClick={() => printInvoiceDocument(inv, invoices)} className="text-xs" style={{ color: "var(--text-body)" }}>طباعة الفاتورة</button>}{!inv.bulkSettlement ? <button onClick={() => setEditingInvoice(inv)} className="text-xs" style={{ color: "var(--accent)" }}>تعديل الفاتورة</button> : <span className="text-xs" style={{ color: "var(--text-muted)" }} title="احذف سندًا مرتبطًا بالتسوية لإعادة فتحها قبل تعديل الفاتورة">التعديل متاح بعد إلغاء التسوية</span>}<button onClick={() => setPendingDelete(inv.id)} className="text-xs flex items-center gap-1" style={{ color: "#A34632" }}><Icon name="trash" size={13} /> حذف الفاتورة</button></div>}
                     </div>
                   </div>
                 )}
@@ -2150,7 +2199,7 @@ function AddIncomeForm({ onAdd, projects, initialIncome = null }) {
 }
 
 // ---------- Accounts (customers / workers / suppliers ledger) ----------
-function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, treasury, upsert, upsertBatch, remove, projects = [], income = [], onOpenProject }) {
+function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, treasury, upsert, upsertBatch, remove, onDeleteMovement, projects = [], income = [], onOpenProject }) {
   const KINDS = { customers: { label: "عملاء", icon: "users", collection: "customers", data: customers }, workers: { label: "عمال", icon: "user", collection: "workers", data: workers }, suppliers: { label: "موردون", icon: "briefcase", collection: "suppliers", data: suppliers } };
   const current = KINDS[sub];
   return (
@@ -2163,12 +2212,12 @@ function AccountsTab({ sub, setSub, customers, suppliers, workers, invoices, tre
           </button>
         ))}
       </div>
-      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} projects={projects} income={income} onOpenProject={onOpenProject} />
+      <ContactsList kind={sub} label={current.label} icon={current.icon} collection={current.collection} data={current.data} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} remove={remove} onDeleteMovement={onDeleteMovement} projects={projects} income={income} onOpenProject={onOpenProject} />
     </div>
   );
 }
 
-function ContactsList({ kind, label, icon, collection, data, invoices, treasury, upsert, upsertBatch, remove, projects, income, onOpenProject }) {
+function ContactsList({ kind, label, icon, collection, data, invoices, treasury, upsert, upsertBatch, remove, onDeleteMovement, projects, income, onOpenProject }) {
   const [query, setQuery] = useState("");
   const [showAdd, setShowAdd] = useState(false);
   const [openId, setOpenId] = useState(null);
@@ -2209,7 +2258,7 @@ function ContactsList({ kind, label, icon, collection, data, invoices, treasury,
         </div>
       )}
       {showAdd && <Modal title={`إضافة ${label.replace(/ون$|اء$/, "")}`} onClose={() => setShowAdd(false)}><AddContactForm existing={data} onAdd={(c) => { upsert(collection, c); setShowAdd(false); }} /></Modal>}
-      {open && <ContactDetail contact={open} label={label} collection={collection} icon={icon} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} canDelete={!hasLinkedActivity(open)} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onTreasurySave={(record) => upsert("treasury", record)} onInvoiceSave={(invoice) => upsert("invoices", invoice)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
+      {open && <ContactDetail contact={open} label={label} collection={collection} icon={icon} invoices={invoices} treasury={treasury} upsert={upsert} upsertBatch={upsertBatch} canDelete={!hasLinkedActivity(open)} onClose={() => setOpenId(null)} onSave={(c) => upsert(collection, c)} onTreasurySave={(record) => upsert("treasury", record)} onInvoiceSave={(invoice) => upsert("invoices", invoice)} onDelete={() => { remove(collection, open.id); setOpenId(null); }} onDeleteMovement={onDeleteMovement} relatedProjects={relatedProjects} income={income} onOpenProject={onOpenProject} existing={data.filter((d) => d.id !== open.id)} />}
     </div>
   );
 }
@@ -2233,7 +2282,7 @@ function AddContactForm({ onAdd, existing = [] }) {
   );
 }
 
-function ContactDetail({ contact, label, collection, icon, invoices = [], treasury, upsert, upsertBatch, canDelete = true, onClose, onSave, onTreasurySave, onInvoiceSave, onDelete, relatedProjects, income = [], onOpenProject, existing = [] }) {
+function ContactDetail({ contact, label, collection, icon, invoices = [], treasury, upsert, upsertBatch, canDelete = true, onClose, onSave, onTreasurySave, onInvoiceSave, onDelete, onDeleteMovement, relatedProjects, income = [], onOpenProject, existing = [] }) {
   const [local, setLocal] = useState(contact);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [statementStart, setStatementStart] = useState("");
@@ -2241,8 +2290,10 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
   const [showStatement, setShowStatement] = useState(false);
   const [expandedInvoiceId, setExpandedInvoiceId] = useState(null);
   const [pendingTxDelete, setPendingTxDelete] = useState(null);
+  const [settlingInvoices, setSettlingInvoices] = useState(false);
+  const settlingInvoicesRef = useRef(false);
   useEffect(() => setLocal(contact), [contact.id]);
-  useEffect(() => setLocal((prev) => ({ ...prev, transactions: contact.transactions })), [contact.transactions]);
+  useEffect(() => setLocal((prev) => ({ ...prev, transactions: contact.transactions, bulkSettlements: contact.bulkSettlements || [] })), [contact.transactions, contact.bulkSettlements]);
   // الاسم والهاتف والملاحظات تُحفظ عند مغادرة الحقل وعلى أحدث نسخة من الحركات، حتى لا تُكتب فوق دفعات مسجلة
   const update = (patch) => setLocal((prev) => ({ ...prev, ...patch }));
   const commit = () => {
@@ -2265,6 +2316,7 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
     if (label === "موردون") return (invoice.direction || "purchase") === "purchase";
     return true;
   }).sort((a, b) => (b.date || "").localeCompare(a.date || ""));
+  const openInvoices = linkedInvoices.filter((invoice) => !invoice.isReturn && getInvoiceOutstanding(invoice, invoices) > 0);
   const expandedInvoice = linkedInvoices.find((invoice) => invoice.id === expandedInvoiceId) || null;
   const supplierStatement = label === "موردون" ? getSupplierStatement(local, invoices) : null;
   const isDuplicateName = hasDuplicateName(existing, local.name);
@@ -2275,48 +2327,64 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
   const projectRemaining = projectTotals.remaining;
   const grandTotal = balance + projectRemaining - projectTotals.surplus;
 
+  const settleAllInvoices = async () => {
+    if (settlingInvoicesRef.current) return;
+    if (label === "عمال" || roundMoney(balance) !== 0) { notify("تظهر تسوية الفواتير فقط عندما يكون الرصيد العام صفرًا."); return; }
+    const candidates = linkedInvoices.filter((invoice) => !invoice.isReturn && getInvoiceOutstanding(invoice, invoices) > 0);
+    if (!candidates.length) { notify("لا توجد فواتير مفتوحة للتسوية."); return; }
+    const totalOutstanding = roundMoney(candidates.reduce((sum, invoice) => sum + getInvoiceOutstanding(invoice, invoices), 0));
+    const confirmed = window.confirm(`الرصيد العام لهذا الحساب صفر. سيتم تعليم ${candidates.length} فاتورة بأنها مسددة بتسوية جماعية بإجمالي ${fmt(totalOutstanding)}، من دون إضافة أي حركة جديدة إلى الخزينة. هل تريد المتابعة؟`);
+    if (!confirmed) return;
+    settlingInvoicesRef.current = true;
+    setSettlingInvoices(true);
+    const id = uid();
+    const settledAt = new Date().toISOString();
+    const invoiceSnapshots = candidates.map((invoice) => ({
+      invoiceId: invoice.id,
+      previousPaidAmount: getInvoicePaidAmount(invoice),
+      previousInitialPaidAmount: invoice.initialPaidAmount ?? null,
+      previousPaymentStatus: getInvoicePaymentStatus(invoice, invoices),
+    }));
+    const transactionIds = transactions.filter((transaction) => transaction.id && !transaction.invoiceDebt && !transaction.invoiceReturn).map((transaction) => transaction.id);
+    const settlement = { id, settledAt, transactionIds, invoiceSnapshots };
+    const updatedContact = { ...local, bulkSettlements: [...(local.bulkSettlements || []), settlement] };
+    const updatedInvoices = candidates.map((invoice) => {
+      const paidAmount = roundMoney(Number(invoice.amount || 0) - getInvoiceReturnedAmount(invoice.id, invoices));
+      return {
+        ...invoice,
+        paidAmount,
+        paymentStatus: "paid",
+        bulkSettlement: {
+          id, settledAt,
+          previousPaidAmount: getInvoicePaidAmount(invoice),
+          previousInitialPaidAmount: invoice.initialPaidAmount ?? null,
+          previousPaymentStatus: getInvoicePaymentStatus(invoice, invoices),
+        },
+      };
+    });
+    try {
+      const saved = await upsertBatch([
+        { collection, record: updatedContact },
+        ...updatedInvoices.map((invoice) => ({ collection: "invoices", record: invoice })),
+      ]);
+      if (!saved) { notify("تعذر حفظ التسوية الجماعية؛ لم تتغير الفواتير أو الحساب."); return; }
+      setLocal(updatedContact);
+      notify(`تمت تسوية ${updatedInvoices.length} فاتورة. وقت التسوية: ${formatSettlementDateTime(settledAt)}.`, "success");
+    } catch (error) {
+      console.error("Bulk invoice settlement failed", error);
+      notify("تعذر حفظ التسوية الجماعية: " + (error?.message || "خطأ غير معروف"));
+    } finally {
+      settlingInvoicesRef.current = false;
+      setSettlingInvoices(false);
+    }
+  };
+
   const removeTx = async (id) => {
-    const transaction = transactions.find((item) => item.id === id);
-    if (!transaction || transaction.invoiceDebt || transaction.invoiceReturn) { setPendingTxDelete(null); return; }
-    const records = [];
-    if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
-      const record = treasury?.[0];
-      const cashEvent = (record?.transactions || []).find((item) => item.paymentId === id || item.id === id);
-      if (record && cashEvent) {
-        const remainingCash = record.transactions.filter((item) => item.id !== cashEvent.id && item.paymentId !== id);
-        const balanceAfter = Number(record.openingBalance || 0) + remainingCash.reduce((sum, item) => sum + Number(item.direction === "in" ? item.amount : -item.amount), 0);
-        if (balanceAfter < 0) { notify("لا يمكن حذف الحركة لأن رصيد الخزينة سيصبح سالبًا. احذف أو صحح الحركات اللاحقة أولًا."); setPendingTxDelete(null); return; }
-        records.push({ collection: "treasury", record: { ...record, transactions: remainingCash } });
-      }
+    if (onDeleteMovement) {
+      const partyType = label === "موردون" ? "supplier" : label === "عمال" ? "worker" : "customer";
+      await onDeleteMovement(partyType, local.id, id);
     }
-    const remainingTransactions = transactions.filter((t) => t.id !== id);
-    const updatedContact = { ...local, transactions: remainingTransactions };
-    records.unshift({ collection, record: updatedContact });
-    if (transaction.customerPayment || transaction.supplierPayment || transaction.customerRefund || transaction.supplierReceipt) {
-      const allocations = Array.isArray(transaction.allocations) && transaction.allocations.length ? transaction.allocations : (transaction.invoiceId ? [{ invoiceId: transaction.invoiceId, amount: transaction.amount }] : []);
-      const allocationTotals = new Map();
-      allocations.forEach((allocation) => allocationTotals.set(allocation.invoiceId, (allocationTotals.get(allocation.invoiceId) || 0) + Number(allocation.amount || 0)));
-      allocationTotals.forEach((allocatedAmount, invoiceId) => {
-        const invoice = invoices.find((item) => item.id === invoiceId);
-        if (!invoice) return;
-        const paidAmount = roundMoney(Math.max(0, getInvoicePaidAmount(invoice) - allocatedAmount));
-        const initialPaidAmount = getInvoiceInitialPaidAmount(invoice, transaction.customerPayment ? [local] : [], transaction.supplierPayment || transaction.supplierReceipt ? [local] : []);
-        const adjustedInitialPaidAmount = transaction.id === "invoice-payment-" + invoice.id
-          ? roundMoney(Math.max(0, initialPaidAmount - allocatedAmount))
-          : initialPaidAmount;
-        records.push({ collection: "invoices", record: {
-          ...invoice,
-          paidAmount,
-          initialPaidAmount: adjustedInitialPaidAmount,
-          paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount }, invoices),
-        } });
-      });
-    }
-    const saved = await upsertBatch(records);
-    if (!saved) { notify("تعذر حفظ حذف الحركة؛ لم يتم تعديل الحساب أو الفاتورة."); setPendingTxDelete(null); return; }
-    setLocal(updatedContact);
     setPendingTxDelete(null);
-    notify("تم حذف الحركة وعكس أثرها.", "success");
   };
 
   return (
@@ -2334,6 +2402,10 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
             {balance === 0 ? "لا يوجد" : balanceText(balance, label)}
           </span>
         </div>
+        {label !== "عمال" && roundMoney(balance) === 0 && openInvoices.length > 0 && <div className="rounded-xl border p-3 flex items-center justify-between gap-3 flex-wrap" style={{ borderColor: "var(--card-border)", background: "var(--good-bg)" }}>
+          <div className="text-xs leading-5" style={{ color: "var(--text-body)" }}>الرصيد العام صفر وهناك {openInvoices.length} فاتورة مفتوحة بإجمالي {fmt(openInvoices.reduce((sum, invoice) => sum + getInvoiceOutstanding(invoice, invoices), 0))}. التسوية لا تضيف حركة قبض أو صرف جديدة.</div>
+          <PrimaryButton onClick={settleAllInvoices} disabled={settlingInvoices}><Icon name="check" size={15} /> {settlingInvoices ? "جارٍ التسوية..." : "سداد جميع الفواتير"}</PrimaryButton>
+        </div>}
 
         <div className="rounded-xl border p-3 flex flex-col gap-3" style={{ borderColor: "var(--card-border)" }}>
           <div className="flex items-center justify-between gap-2 flex-wrap">
@@ -2412,6 +2484,7 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
                     <Badge bg={getInvoicePaymentStatus(invoice, invoices) === "paid" ? "var(--good-bg)" : "var(--warn-bg)"} fg={getInvoicePaymentStatus(invoice, invoices) === "paid" ? "#4B6350" : "#A34632"}>{getInvoicePaymentStatus(invoice, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(invoice, invoices) === "partial" ? "جزئية" : "غير مسددة"}</Badge>
                   </div>
                   <div className="text-xs mt-1" style={{ color: "var(--text-muted)" }}>{invoice.isReturn ? "مرتجع" : invoice.direction === "purchase" ? "شراء" : "بيع"} · {fmt(invoice.amount)}</div>
+                  {invoice.bulkSettlement && <div className="text-xs mt-1" style={{ color: "#4B6350" }}>مسددة بتسوية جماعية · {formatSettlementDateTime(invoice.bulkSettlement.settledAt)}</div>}
                 </button>
               ))}
             </div>
@@ -2429,7 +2502,7 @@ function ContactDetail({ contact, label, collection, icon, invoices = [], treasu
             </div>
             <div className="grid sm:grid-cols-2 gap-2 text-xs" style={{ color: "var(--text-body)" }}>
               <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>التاريخ</div><strong>{expandedInvoice.date}</strong></div>
-              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>الحالة</div><strong>{getInvoicePaymentStatus(expandedInvoice, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(expandedInvoice, invoices) === "partial" ? "جزئية" : "غير مسددة"}</strong></div>
+              <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>الحالة</div><strong>{expandedInvoice.bulkSettlement ? `مسددة بتسوية جماعية · ${formatSettlementDateTime(expandedInvoice.bulkSettlement.settledAt)}` : getInvoicePaymentStatus(expandedInvoice, invoices) === "paid" ? "مسددة" : getInvoicePaymentStatus(expandedInvoice, invoices) === "partial" ? "جزئية" : "غير مسددة"}</strong></div>
               <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>النوع</div><strong>{expandedInvoice.isReturn ? "مرتجع" : expandedInvoice.direction === "purchase" ? "شراء" : "بيع"}</strong></div>
               <div className="rounded-lg p-2" style={{ background: "var(--divider)" }}><div style={{ color: "var(--text-muted)" }}>المبلغ</div><strong>{fmt(expandedInvoice.amount)}</strong></div>
             </div>
@@ -2857,13 +2930,13 @@ function MillReportsTab({ month, setMonth, invoices, expenses, customers, suppli
 function ReportList({ title, empty, items }) { return <div className="rounded-2xl border p-4" style={{ background: "var(--card-bg)", borderColor: "var(--card-border)" }}><h3 className="font-semibold text-sm mb-3" style={{ color: "var(--text-body)" }}>{title}</h3>{items.length === 0 ? <EmptyState icon="users" title={empty} /> : <div className="flex flex-col divide-y" style={{ borderColor: "var(--divider)" }}>{items.map((item) => <div key={item.name} className="flex items-center justify-between py-2 text-sm" style={{ borderColor: "var(--divider)" }}><span style={{ color: "var(--text-body)" }}>{item.name}</span><strong style={{ color: "#A34632" }}>{item.value}</strong></div>)}</div>}</div>; }
 
 const CASHFLOW_PAYMENT_MODES = {
-  customerReceipt: { partyType: "customer", cashDirection: "in", ledgerType: "credit", transactionFlag: "customerPayment", title: "سند قبض من عميل", action: "قبض من عميل", partyLabel: "العميل", ledgerLabel: "قبض من العميل", notePlaceholder: "مثال: سداد دفعة الفاتورة", allocationMethod: "customer", success: "تم تسجيل القبض وتحديث حساب العميل والخزينة." },
-  supplierPayment: { partyType: "supplier", cashDirection: "out", ledgerType: "credit", transactionFlag: "supplierPayment", title: "سند صرف إلى مورد", action: "صرف إلى مورد", partyLabel: "المورد", ledgerLabel: "صرف إلى المورد", notePlaceholder: "مثال: دفعة للمورد", allocationMethod: "supplier", success: "تم تسجيل الصرف وتحديث حساب المورد والخزينة." },
-  customerRefund: { partyType: "customer", cashDirection: "out", ledgerType: "debit", transactionFlag: "customerRefund", title: "سند صرف إلى عميل", action: "صرف إلى عميل", partyLabel: "العميل", ledgerLabel: "صرف إلى العميل", notePlaceholder: "مثال: رد دفعة أو مبلغ مرتجع", allocationMethod: null, help: "سيُسجّل المبلغ كصرف للعميل، فيُخصم من رصيده الدائن إن وجد. لا يغيّر هذا السند سداد فاتورة بيع مباشرة.", success: "تم تسجيل الصرف للعميل وتحديث حسابه والخزينة." },
-  supplierReceipt: { partyType: "supplier", cashDirection: "in", ledgerType: "debit", transactionFlag: "supplierReceipt", title: "سند قبض من مورد", action: "قبض من مورد", partyLabel: "المورد", ledgerLabel: "قبض من المورد", notePlaceholder: "مثال: استرداد مبلغ مرتجع أو دفعة زائدة", allocationMethod: null, help: "سيُسجَّل المبلغ كقبض من المورد (استرداد نقدي): يزيد المستحق علينا له أو يخفض رصيده الدائن لدينا، ولا يغيّر سداد أي فاتورة شراء.", success: "تم تسجيل القبض من المورد وتحديث حسابه والخزينة." },
+  customerReceipt: { partyType: "customer", cashDirection: "in", ledgerType: "credit", transactionFlag: "customerPayment", title: "سند قبض من عميل", action: "قبض من عميل", partyLabel: "العميل", ledgerLabel: "قبض من العميل", notePlaceholder: "مثال: دفعة من رصيد العميل", help: "يُسجّل القبض في الرصيد العام للعميل والخزينة فقط؛ لا يخصّص تلقائيًا لأي فاتورة ولا يغيّر حالتها.", success: "تم تسجيل القبض في الرصيد العام للعميل والخزينة." },
+  supplierPayment: { partyType: "supplier", cashDirection: "out", ledgerType: "credit", transactionFlag: "supplierPayment", title: "سند صرف إلى مورد", action: "صرف إلى مورد", partyLabel: "المورد", ledgerLabel: "صرف إلى المورد", notePlaceholder: "مثال: دفعة من رصيد المورد", help: "يُسجّل الصرف في الرصيد العام للمورد والخزينة فقط؛ لا يخصّص تلقائيًا لأي فاتورة ولا يغيّر حالتها.", success: "تم تسجيل الصرف في الرصيد العام للمورد والخزينة." },
+  customerRefund: { partyType: "customer", cashDirection: "out", ledgerType: "debit", transactionFlag: "customerRefund", title: "سند صرف إلى عميل", action: "صرف إلى عميل", partyLabel: "العميل", ledgerLabel: "صرف إلى العميل", notePlaceholder: "مثال: رد دفعة أو مبلغ مرتجع", help: "سيُسجّل المبلغ كصرف للعميل، فيُخصم من رصيده الدائن إن وجد. لا يغيّر هذا السند سداد فاتورة بيع مباشرة.", success: "تم تسجيل الصرف للعميل وتحديث حسابه والخزينة." },
+  supplierReceipt: { partyType: "supplier", cashDirection: "in", ledgerType: "debit", transactionFlag: "supplierReceipt", title: "سند قبض من مورد", action: "قبض من مورد", partyLabel: "المورد", ledgerLabel: "قبض من المورد", notePlaceholder: "مثال: استرداد مبلغ مرتجع أو دفعة زائدة", help: "سيُسجَّل المبلغ كقبض من المورد (استرداد نقدي): يزيد المستحق علينا له أو يخفض رصيده الدائن لدينا، ولا يغيّر سداد أي فاتورة شراء.", success: "تم تسجيل القبض من المورد وتحديث حسابه والخزينة." },
 };
 
-function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, record, upsertBatch, onClose }) {
+function CashflowPaymentForm({ customers, suppliers, paymentType, record, upsertBatch, onClose }) {
   const config = CASHFLOW_PAYMENT_MODES[paymentType];
   const parties = config.partyType === "customer" ? customers : suppliers;
   const [partyId, setPartyId] = useState("");
@@ -2874,10 +2947,6 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
   const savingRef = useRef(false);
   const party = parties.find((item) => item.id === partyId);
   const cashBalance = Number(record.openingBalance || 0) + (record.transactions || []).reduce((sum, tx) => sum + Number(tx.direction === "in" ? tx.amount : -tx.amount), 0);
-  const getAllocations = (value) => {
-    if (!party || !config.allocationMethod) return [];
-    return config.allocationMethod === "customer" ? allocateCustomerPayment(party, invoices, value) : allocateSupplierPayment(party, invoices, value);
-  };
   const submit = async () => {
     if (savingRef.current) return;
     const value = roundMoney(Number(amount));
@@ -2886,14 +2955,11 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
     if (!date) { notify("أدخل تاريخ الحركة."); return; }
     if (config.cashDirection === "out" && value > cashBalance) { notify("لا يمكن صرف مبلغ أكبر من رصيد الخزينة."); return; }
 
-    const allocations = getAllocations(value);
     const paymentId = uid();
     const paymentNote = note.trim() || config.ledgerLabel;
     const payment = {
       id: paymentId, date, type: config.ledgerType, amount: value, note: paymentNote,
       [config.transactionFlag]: true,
-      allocations,
-      ...(allocations.length === 1 ? { invoiceId: allocations[0].invoiceId } : {}),
     };
     const updatedParty = { ...party, transactions: [payment, ...(party.transactions || [])] };
     const cashTransaction = {
@@ -2902,23 +2968,6 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
       note: `${config.ledgerLabel} ${party.name} · ${paymentNote}`,
     };
     const updatedTreasury = { ...record, id: record.id || "main", transactions: [cashTransaction, ...(record.transactions || [])] };
-    const changedInvoices = new Map();
-    allocations.forEach((allocation) => {
-      const invoice = invoices.find((item) => item.id === allocation.invoiceId);
-      if (!invoice) return;
-      const currentPaid = getInvoicePaidAmount(invoice);
-      const currentOutstanding = getInvoiceOutstanding(invoice, invoices);
-      const isFullySettled = Number(allocation.amount || 0) >= currentOutstanding;
-      const amountAfterPayment = isFullySettled
-        ? Math.max(0, roundMoney(Number(invoice.amount || 0) - getInvoiceReturnedAmount(invoice.id, invoices)))
-        : roundMoney(Math.min(Number(invoice.amount || 0), currentPaid + Number(allocation.amount || 0)));
-      changedInvoices.set(invoice.id, {
-        ...invoice,
-        paidAmount: amountAfterPayment,
-        initialPaidAmount: getInvoiceInitialPaidAmount(invoice, customers, suppliers),
-        paymentStatus: getInvoicePaymentStatus({ ...invoice, paidAmount: amountAfterPayment }, invoices),
-      });
-    });
 
     savingRef.current = true;
     setSaving(true);
@@ -2926,7 +2975,6 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
       const records = [
         { collection: config.partyType === "customer" ? "customers" : "suppliers", record: updatedParty },
         { collection: "treasury", record: updatedTreasury },
-        ...Array.from(changedInvoices.values()).map((invoice) => ({ collection: "invoices", record: invoice })),
       ];
       const saved = await upsertBatch(records);
       if (!saved) { notify("تعذر حفظ السند كاملًا. لم تُحفظ أي من قيوده؛ راجع إعداد قاعدة البيانات وحاول مجددًا."); return; }
@@ -2940,25 +2988,20 @@ function CashflowPaymentForm({ customers, suppliers, invoices, paymentType, reco
       setSaving(false);
     }
   };
-  const allocationsPreview = party && positiveNumber(amount) ? getAllocations(Number(amount)) : [];
   return <div className="flex flex-col gap-3">
     <div><FieldLabel>{config.partyLabel}</FieldLabel><SearchablePicker items={parties} value={partyId} onSelect={setPartyId} placeholder={`اختر ${config.partyLabel} بالاسم أو الهاتف...`} getLabel={(item) => item.name + (item.phone ? " — " + item.phone : "")} getSearchText={(item) => [item.name, item.phone].filter(Boolean).join(" ")} /></div>
     <div className="grid grid-cols-2 gap-3"><div><FieldLabel>المبلغ</FieldLabel><TextInput type="number" min="0.01" step="0.01" value={amount} onChange={(event) => setAmount(event.target.value)} placeholder="0.00" /></div><div><FieldLabel>التاريخ</FieldLabel><TextInput type="date" value={date} onChange={(event) => setDate(event.target.value)} /></div></div>
     <div><FieldLabel>البيان (اختياري)</FieldLabel><TextInput value={note} onChange={(event) => setNote(event.target.value)} placeholder={config.notePlaceholder} /></div>
     <div className="rounded-lg p-3 text-xs leading-6" style={{ background: "var(--divider)", color: "var(--text-body)" }}>
       {config.cashDirection === "out" && <div><strong>رصيد الخزينة المتاح:</strong> {fmt(cashBalance)}</div>}
-      {config.allocationMethod ? <div>سيتم توزيع المبلغ على أقدم الفواتير المستحقة{config.partyType === "customer" ? " للعميل" : " للمورد"}. والفائض يسوّي أي رصيد يدوي قائم أولًا، ثم يظهر رصيدًا دائنًا للجهة.</div> : <div>{config.help}</div>}
-      {party && config.allocationMethod && <div><strong>الفواتير التي سيُخصّص لها المبلغ:</strong> {allocationsPreview.length ? allocationsPreview.map((allocation) => {
-        const invoice = invoices.find((item) => item.id === allocation.invoiceId);
-        return `#${invoice?.invoiceNumber || invoice?.id}: ${fmt(allocation.amount)}`;
-      }).join(" · ") : "لا توجد فواتير مستحقة؛ سيُسجّل المبلغ في حساب الجهة."}</div>}
+      <div>{config.help}</div>
     </div>
     <div className="flex flex-wrap gap-2"><PrimaryButton onClick={submit} disabled={saving || !partyId || !positiveNumber(amount)}><Icon name={config.cashDirection === "in" ? "plus" : "minus"} size={15} /> {saving ? "جارٍ الحفظ..." : `تسجيل ${config.action}`}</PrimaryButton><GhostButton onClick={onClose}>إلغاء</GhostButton></div>
   </div>;
 }
 
 // ---------- Cashflow overview ----------
-function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury = [], upsertBatch, onDeleteContactMovement, onDeleteCashMovement }) {
+function CashflowTab({ customers = [], suppliers = [], treasury = [], upsertBatch, onDeleteContactMovement, onDeleteCashMovement }) {
   const [paymentType, setPaymentType] = useState(null);
   const [pendingDelete, setPendingDelete] = useState(null);
   const record = treasury?.[0] || { id: "main", openingBalance: 0, transactions: [] };
@@ -3030,7 +3073,7 @@ function CashflowTab({ customers = [], suppliers = [], invoices = [], treasury =
           )}
         </div>
       </div>
-      {paymentType && <Modal title={CASHFLOW_PAYMENT_MODES[paymentType].title} onClose={() => setPaymentType(null)}><CashflowPaymentForm customers={customers} suppliers={suppliers} invoices={invoices} paymentType={paymentType} record={record} upsertBatch={upsertBatch} onClose={() => setPaymentType(null)} /></Modal>}
+      {paymentType && <Modal title={CASHFLOW_PAYMENT_MODES[paymentType].title} onClose={() => setPaymentType(null)}><CashflowPaymentForm customers={customers} suppliers={suppliers} paymentType={paymentType} record={record} upsertBatch={upsertBatch} onClose={() => setPaymentType(null)} /></Modal>}
     </div>
   );
 }
