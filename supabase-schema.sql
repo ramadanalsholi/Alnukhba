@@ -339,3 +339,5 @@ $$;
 
 -- Longer invite codes for new companies (12 hex chars instead of 8). Existing codes keep working.
 alter table public.organizations alter column invite_code set default upper(substr(encode(gen_random_bytes(6), 'hex'), 1, 12));
+
+notify pgrst, 'reload schema';

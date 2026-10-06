@@ -53,8 +53,8 @@
 const { useState, useEffect, useMemo, useRef } = React;
 
 // ضع قيم المشروع من Supabase هنا بعد إنشائه.
-const SUPABASE_URL = "";
-const SUPABASE_ANON_KEY = "";
+const SUPABASE_URL = "https://ghfowcrcsiwdtvmcaket.supabase.co";
+const SUPABASE_ANON_KEY = "sb_publishable_rK9r0NuUiVb7ax9lw8xnmg_z_LfPKjt";
 const hasSupabaseConfig = SUPABASE_URL.startsWith("https://") && SUPABASE_ANON_KEY.length > 20 && !SUPABASE_ANON_KEY.startsWith("YOUR_");
 const supabaseClient = hasSupabaseConfig && window.supabase ? window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY) : null;
 const COMPANY_LOGO_PATH = "photo_2026-10-04_22-29-34.jpg";
@@ -712,7 +712,8 @@ function useAuth() {
     const organizationName = currentSession.user.user_metadata?.organization_name || "شركة القصر";
     const organizationCode = currentSession.user.user_metadata?.organization_code || "";
     const { data, error: organizationError } = await supabaseClient.rpc("get_or_create_my_organization", { p_name: organizationName, p_code: organizationCode });
-    if (organizationError) setError(organizationError.message);
+    if (organizationError?.code === "PGRST202") setError("دالة إعداد مساحة الشركة غير موجودة في قاعدة البيانات أو لم تُحدّث ذاكرة Supabase. شغّل ملف supabase-schema.sql كاملًا من SQL Editor في مشروع Supabase، ثم أعد تحميل الصفحة.");
+    else if (organizationError) setError(organizationError.message);
     else setOrganization(Array.isArray(data) ? data[0] : data);
     setLoading(false);
   };
